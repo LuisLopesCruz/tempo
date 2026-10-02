@@ -24,6 +24,9 @@ const CAB = { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" };
 const ALERTA_RIO = "http://websempre.rio.rj.gov.br/json/chuvas";
 const INMET_AVISOS = "https://apiprevmet3.inmet.gov.br/avisos/ativos";
 
+// O INMET publica hoje tres niveis, mas com id_severidade 6, 7 e 8 — a
+// numeracao comecar em 6 diz que a tabela deles tem (ou teve) outros. Nada
+// garante que um 9 nao apareca.
 const SEVERIDADE: Record<string, string> = {
   "perigo potencial": "perigo_potencial",
   "perigo": "perigo",
@@ -130,7 +133,12 @@ Deno.serve(async (req: Request) => {
         .filter((c) => /^33\d{5}$/.test(c));
       if (!codes.length) continue;
 
-      const sev = SEVERIDADE[String(a.severidade ?? "").trim().toLowerCase()] ?? "observacao";
+      // NUNCA rebaixar para 'observacao' o que nao esta no mapa: isso tornava
+      // um nivel novo — possivelmente mais grave — no mais brando de todos,
+      // em silencio, e apagava a palavra original. Vai para 'desconhecida',
+      // que o painel ordena no topo e pinta com a cor que o INMET mandou.
+      const sevBruta = String(a.severidade ?? "").trim();
+      const sev = SEVERIDADE[sevBruta.toLowerCase()] ?? "desconhecida";
       linhas.push({
         fonte: "inmet",
         id_externo: String(a.id ?? a.id_aviso),
@@ -142,7 +150,14 @@ Deno.serve(async (req: Request) => {
         descricao: String(a.descricao ?? "").slice(0, 200),
         // 'riscos' costuma citar explicitamente risco de corte de energia:
         // é entrada direta para a camada de impacto.
-        bruto: { riscos: a.riscos ?? null, cor: a.aviso_cor ?? null, referencia: a.referencia ?? null },
+        bruto: {
+          riscos: a.riscos ?? null,
+          cor: a.aviso_cor ?? null,
+          referencia: a.referencia ?? null,
+          // guardado SEMPRE, nao so quando desconhecido: se amanha o INMET
+          // renomear um nivel que hoje mapeamos, da para descobrir olhando.
+          severidade_bruta: sevBruta || null,
+        },
       });
     }
     if (linhas.length) {
