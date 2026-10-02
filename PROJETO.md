@@ -1296,11 +1296,44 @@ ao ar** acertou. Usar o mesmo dado para as duas coisas seria medir o modelo com
 a própria régua. Por isso o passo 4 do procedimento só aceita dias que já
 tinham previsão congelada *antes* de o dado chegar.
 
-### Estado
+### Estado, e por que há zero pares (investigado em 2026-10-02)
 
-Nada verificado ainda — a coleta de previsão começou em 10/09 e a ANEEL só
-publicou até setembro. **5 dias já congelados.** A primeira aferição sai quando
-o próximo lote chegar; a varredura das quartas avisa.
+**25 dias congelados, nenhum verificado.** Vinte e seis dias de silêncio
+levantaram a suspeita de que a fonte tinha mudado. Não mudou — e o diagnóstico
+tem três camadas, duas invisíveis até alguém procurar.
+
+**1. O vigia está certo.** Aponta para `ced06b4c-...`
+(*ocorrencias-emergenciais-nas-redes-de-distribuicao*), o dataset dos chamados,
+que é o que a camada 3 usa. Na investigação eu comparei primeiro contra
+`ccb25653-...` (*interrupcoes-de-energia-eletrica*) e conclui que "nenhum dos 10
+recursos existe mais" — falso alarme. São **dois datasets diferentes**, ambos
+com 21 recursos e nomes parecidos; o segundo é o do D10, de unidades
+consumidoras afetadas. Ficou anotado no cabeçalho do `7_espiar_aneel.py`.
+
+**2. A ANEEL publicou, mas o arquivo não alcança as previsões.** O parquet de
+2026 saiu em **10/09** e cobre **competência janeiro a agosto**. As previsões
+congeladas começam em **11/09**. Nenhuma delas é verificável contra esse
+arquivo — não é atraso nosso, é dado que ainda não existe.
+
+Medido sem baixar os 195 MB: o rodapé do parquet guarda min/max por coluna e o
+servidor aceita HTTP Range. **149 KB** resolveram. Virou ferramenta em
+`calibracao/7_espiar_aneel.py`.
+
+Pelo padrão observado — publicação em 10/09 cobrindo até agosto —, setembro
+deve aparecer por volta de **10/10**. É inferência de **uma** observação, não
+cadência confirmada.
+
+**3. O que teria mordido em silêncio:** `tempo.impacto_observado` está
+**vazia**, e nada a preenche sozinho. A carga é o script manual
+`4_carregar_observado.py` — 195 MB de parquet não cabem em Edge Function.
+"Esperando a ANEEL" era só metade da verdade: quando o arquivo chegar, alguém
+ainda precisa rodar o passo 4. Não há automação prevista, e pelo custo nem
+deveria haver; mas precisa estar escrito, senão vira espera eterna.
+
+**Sujeira conhecida na fonte:** `DthIniOcorrencia` tem máximo em 2026-12-02 e
+`DthFimOcorrencia` em 2029 — digitação errada das distribuidoras. O passo 4 é
+imune: carrega tudo e deixa o SQL filtrar pelos dias que tinham previsão
+congelada.
 
 O painel declara isso em texto no cartão de impacto, em vez de exibir um número
 como se fosse aferido.
