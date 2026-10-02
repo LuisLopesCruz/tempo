@@ -1,0 +1,44 @@
+# Sincroniza o observado da ANEEL, uma vez por dia.
+#
+# 29 dias por mes isto termina em ~20 segundos e 149 KB: o script le so o
+# rodape do parquet remoto para saber ate que mes de competencia ele vai. No
+# dia em que a ANEEL publica o mes que nos falta, a execucao vira ~5 minutos —
+# baixa as duas colunas que importam (~54 MB), agrega o RJ por municipio-dia e
+# manda para a Edge Function, que grava e repontua o Brier da camada 3.
+#
+# Custo: ~13 minutos/mes dos 2.000 gratuitos de repositorio privado.
+#
+# Por que aqui e nao numa Edge Function: 54 MB e ~4 minutos nao cabem no limite
+# de 150 s do Supabase. E por que nao na maquina do usuario: premissa nº4.
+name: ANEEL — observado
+
+on:
+  schedule:
+    - cron: "0 9 * * *"      # 09:00 UTC = 06:00 BRT
+  workflow_dispatch:          # permite rodar a mao pelo botao do GitHub
+
+concurrency:
+  group: aneel-observado
+  cancel-in-progress: false
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install --quiet pyarrow pandas
+
+      - name: Sincronizar
+        env:
+          TEMPO_SUPABASE_URL: https://hmwevcpcelmwnonbeojy.supabase.co
+          TEMPO_ANON_KEY: ${{ secrets.TEMPO_ANON_KEY }}
+          TEMPO_FUNCOES_URL: ${{ secrets.TEMPO_FUNCOES_URL }}
+          TEMPO_SEGREDO: ${{ secrets.TEMPO_SEGREDO }}
+        run: python calibracao/8_sincronizar_aneel.py
