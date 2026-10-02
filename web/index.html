@@ -1,0 +1,1424 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TEMPO-RJ</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --ink-muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --accent:#2a78d6;
+  /* cor = CAUSA. A gravidade do dia vive na palavra colorida, nao na barra:
+     duas dimensoes no mesmo canal de cor era o que tornava vento normal
+     indistinguivel de raio. Violeta fica fora da rampa de gravidade
+     (amarelo/laranja/vermelho), entao nao compete com ela. */
+  --vento:#2a78d6; --raio:#7c3aed; --conv:#0d9488; --normal:#b3b1a8;
+  --sol:#f0a81e; --lua:#8ea2c4; --gota:#2a78d6; --nuvem:#93a0b2;
+  --s0:#eeeeea; --s1:#cde2fb; --s2:#b7d3f6; --s3:#9ec5f4;
+  --s4:#6da7ec; --s5:#3987e5; --s6:#256abf; --s7:#184f95; --s8:#0d366b;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#fff; --ink-2:#c3c2b7; --ink-muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --accent:#3987e5;
+    --vento:#5598e7; --raio:#a78bfa; --conv:#2dd4bf; --normal:#d8d6cd;
+    --sol:#f5bb3e; --lua:#b9c7e0; --gota:#5598e7; --nuvem:#93a2b8;
+    --s0:#232322; --s1:#0d366b; --s2:#104281; --s3:#184f95;
+    --s4:#256abf; --s5:#3987e5; --s6:#5598e7; --s7:#86b6ef; --s8:#cde2fb;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#fff; --ink-2:#c3c2b7; --ink-muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --accent:#3987e5;
+  --vento:#5598e7; --raio:#a78bfa; --conv:#2dd4bf; --normal:#d8d6cd;
+  --sol:#f5bb3e; --lua:#b9c7e0; --gota:#5598e7; --nuvem:#93a2b8;
+  --s0:#232322; --s1:#0d366b; --s2:#104281; --s3:#184f95;
+  --s4:#256abf; --s5:#3987e5; --s6:#5598e7; --s7:#86b6ef; --s8:#cde2fb;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--plane);color:var(--ink);
+  font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 64px}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content:space-between;margin-bottom:20px}
+h1{font-size:19px;font-weight:640;letter-spacing:-.01em;margin:0}
+h1 span{color:var(--ink-muted);font-weight:400}
+.meta{font-size:12px;color:var(--ink-muted);font-variant-numeric:tabular-nums}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:18px;margin-bottom:16px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px}
+select,button{font:inherit;color:var(--ink);background:var(--surface);
+  border:1px solid var(--axis);border-radius:8px;padding:8px 11px;cursor:pointer}
+select{min-width:230px}
+/* Combobox de municipio: filtra conforme digita, ignorando acento e caixa,
+   para "sao goncalo" achar "Sao Goncalo". <datalist> nativo nao faz isso. */
+.combo{position:relative}
+.combo input{font:inherit;color:var(--ink);background:var(--surface);
+  border:1px solid var(--axis);border-radius:8px;padding:8px 11px;width:262px}
+.combo input:focus{outline:none;border-color:var(--accent)}
+.combo ul{position:absolute;z-index:40;top:calc(100% + 4px);left:0;width:100%;
+  max-height:292px;overflow-y:auto;margin:0;padding:4px;list-style:none;
+  background:var(--surface);border:1px solid var(--ring);border-radius:10px;
+  box-shadow:0 10px 28px rgba(0,0,0,.16)}
+.combo li{padding:7px 9px;border-radius:6px;cursor:pointer;font-size:13.5px;
+  display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.combo li .reg{color:var(--ink-muted);font-size:11.5px;white-space:nowrap}
+.combo li[aria-selected="true"],.combo li:hover{background:var(--s1)}
+.combo li.vazio{color:var(--ink-muted);cursor:default;font-size:12.5px;display:block}
+/* Monitor de aprendizado: duas travas, duas barrinhas. Cinza = falta,
+   azul = andando, verde = trava vencida. */
+.gate{display:flex;align-items:center;gap:8px}
+.gate .trk{flex:1;min-width:40px;height:6px;border-radius:3px;background:var(--grid)}
+.gate .trk i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+.gate.ok .trk i{background:var(--good)}
+.gate .n{font-size:11px;color:var(--ink-muted);white-space:nowrap;
+  font-variant-numeric:tabular-nums}
+#aprTab th:first-child,#aprTab td:first-child{width:168px}
+#despTab th:first-child,#despTab td:first-child{width:180px}
+#despTab .gate{max-width:200px}
+.sub2{font-size:12px;font-weight:620;margin:22px 0 4px;letter-spacing:.01em;
+  color:var(--ink)}
+.sub2:first-child{margin-top:0}
+/* Tira de condicao do tempo. Mesma malha do mapa de chuva de proposito: as
+   duas linhas do tempo tem de bater hora a hora quando o olho pula de um
+   cartao para o outro. */
+.tcell{height:30px;display:flex;align-items:center;justify-content:center;
+  border-radius:5px;background:var(--s0)}
+.tcell.vazio{background:transparent}
+.wic{width:21px;height:21px;color:var(--nuvem);display:block}
+.tleg{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:10px;
+  font-size:11.5px;color:var(--ink-muted)}
+.tleg span{display:inline-flex;align-items:center;gap:5px}
+#aprTab .gate{max-width:180px}
+table.tab td .sub{display:block;font-size:11px;color:var(--ink-muted);margin-top:2px}
+button:hover{border-color:var(--accent)}
+button.ghost{background:transparent}
+.hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:20px}
+.tile .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-muted);margin-bottom:6px}
+.tile .val{font-size:32px;font-weight:660;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+.tile .sub{font-size:12px;color:var(--ink-2);margin-top:4px}
+.consenso{display:inline-flex;gap:3px;align-items:center;margin-top:8px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--s0);box-shadow:0 0 0 1px var(--ring) inset}
+.dot.on{background:var(--accent);box-shadow:none}
+h2{font-size:13px;font-weight:620;margin:0 0 3px;letter-spacing:.01em}
+.hint{font-size:12px;color:var(--ink-muted);margin:0 0 14px}
+.hm{overflow-x:auto}
+.hm table{border-collapse:separate;border-spacing:3px;min-width:660px;
+  width:100%;table-layout:fixed}
+.hm th{font-size:10px;font-weight:500;color:var(--ink-muted);padding:0;text-align:center;font-variant-numeric:tabular-nums}
+.hm col.cday{width:88px}
+.hm td.day{font-size:11.5px;color:var(--ink-2);text-align:right;padding-right:10px;
+  white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden}
+.cell{height:32px;border-radius:5px;background:var(--s0);cursor:default}
+.cell[data-k="1"]{background:var(--s1)}.cell[data-k="2"]{background:var(--s2)}
+.cell[data-k="3"]{background:var(--s3)}.cell[data-k="4"]{background:var(--s4)}
+.cell[data-k="5"]{background:var(--s5)}.cell[data-k="6"]{background:var(--s6)}
+.cell[data-k="7"]{background:var(--s7)}.cell[data-k="8"]{background:var(--s8)}
+.cell.vazio{background:transparent;box-shadow:0 0 0 1px var(--grid) inset}
+.legenda{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:11px;color:var(--ink-muted);flex-wrap:wrap}
+.legenda i{width:16px;height:11px;border-radius:3px;display:inline-block}
+.bars{display:grid;gap:10px;margin-top:4px}
+.bar-row{display:grid;grid-template-columns:88px 1fr 104px;gap:12px;align-items:center}
+.bar-row .d{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.track{position:relative;height:16px;background:var(--s0);border-radius:4px}
+.fill{position:absolute;inset:0 auto 0 0;background:var(--accent);border-radius:4px}
+.bar-row .v{text-align:right;font-variant-numeric:tabular-nums}
+.bar-row .v b{font-size:13px;color:var(--ink)}
+.bar-row .v .cc{font-size:11px;color:var(--ink-muted);margin-top:2px}
+.bar-row .v .cc.baixa{color:var(--warning)}
+/* Cartao "x normal do mes": a barra tem ESCALA FIXA — 100% = o mes inteiro.
+   Diferente das outras barras do painel, que sao relativas a janela. */
+.mes-row{display:grid;grid-template-columns:88px 1fr 214px;gap:12px;align-items:center;
+  padding:9px 0;border-bottom:1px solid var(--grid)}
+.mes-row:last-child{border-bottom:0}
+.mes-row .d{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.mes-row .trilho{position:relative;height:10px;background:var(--s0);border-radius:3px;overflow:hidden}
+.mes-row .trilho i{position:absolute;inset:0 auto 0 0;display:block;background:var(--accent)}
+.mes-row .trilho i.at{background:var(--warning)}
+.mes-row .trilho i.al{background:var(--serious)}
+.mes-row .trilho i.ex{background:var(--critical)}
+.mes-row .p{text-align:right;font-variant-numeric:tabular-nums;font-size:13px;font-weight:650;color:var(--ink)}
+/* a frase fica na MESMA linha do numero; so os mm descem */
+.mes-row .p span.lbl{font-size:11px;font-weight:400;color:var(--ink-2)}
+.mes-row .p span.mm{display:block;font-size:10.5px;font-weight:400;color:var(--ink-muted);margin-top:3px}
+.mes-tot{margin-top:13px;padding-top:11px;border-top:1px solid var(--grid);font-size:12px;color:var(--ink-2)}
+/* Panorama: a unica leitura do painel que nao e de um municipio so. */
+.pan3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.pan3 h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:600;
+  color:var(--ink-muted);margin:0 0 4px;padding-bottom:5px;border-bottom:1px solid var(--grid)}
+.pan3 .vazio{font-size:11.5px;color:var(--ink-muted);padding:8px 0}
+.top5 .l{display:grid;grid-template-columns:15px 1fr auto;gap:7px;align-items:baseline;
+  padding:6px 0;border-bottom:1px solid var(--grid)}
+.top5 .l:last-child{border-bottom:0}
+.top5 .pos{font-size:10.5px;color:var(--ink-muted);font-variant-numeric:tabular-nums}
+.top5 .nm{font-size:12.5px;color:var(--ink);font-weight:560;line-height:1.25}
+.top5 .sub{display:block;font-size:10.5px;font-weight:400;color:var(--ink-muted);margin-top:1px}
+.top5 .pr{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.top5 .pr b{font-size:12.5px}
+/* o rotulo repete em todo item de proposito: numero sem unidade obriga o leitor
+   a lembrar a definicao que esta la em cima, e ele nao lembra */
+.top5 .pr span{display:block;font-size:9.5px;color:var(--ink-muted);margin-top:1px;
+  font-weight:400;letter-spacing:-.01em}
+@media(max-width:760px){.pan3{grid-template-columns:1fr;gap:16px}}
+.conces{margin-top:14px;padding-top:12px;border-top:1px solid var(--grid);
+  display:grid;gap:7px;font-size:12px;color:var(--ink-2)}
+.conces .cl{display:grid;grid-template-columns:86px 1fr auto;gap:10px;align-items:center}
+.conces .cn{font-weight:600;color:var(--ink)}
+.conces .bar{position:relative;height:8px;background:var(--s0);border-radius:3px;overflow:hidden}
+.conces .bar i{position:absolute;inset:0 auto 0 0;display:block;background:var(--serious)}
+.conces .qt{font-size:11px;color:var(--ink-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+table.tab{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+table.tab th{text-align:left;font-weight:560;color:var(--ink-muted);font-size:11px;
+  text-transform:uppercase;letter-spacing:.05em;padding:7px 10px 7px 0;border-bottom:1px solid var(--grid)}
+table.tab td{padding:7px 10px 7px 0;border-bottom:1px solid var(--grid);color:var(--ink-2)}
+table.tab td:first-child{color:var(--ink)}
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:560;
+  padding:2px 8px;border-radius:999px;border:1px solid var(--ring)}
+.tag.serious::before{content:"▲";color:var(--serious)}
+.aviso{font-size:12.5px;color:var(--ink-2);line-height:1.65}
+.aviso b{color:var(--ink);font-weight:600}
+footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
+  font-size:12px;color:var(--ink-muted);line-height:1.7}
+#tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--surface);border:1px solid var(--ring);border-radius:8px;padding:9px 11px;
+  font-size:12px;line-height:1.55;box-shadow:0 6px 22px rgba(0,0,0,.16);max-width:230px}
+#tip b{display:block;margin-bottom:3px;color:var(--ink)}
+#tip span{color:var(--ink-2)}
+.alerta{display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--grid)}
+.alerta:last-child{border-bottom:0}
+.alerta .ic{font-size:15px;line-height:1.2;flex:0 0 auto}
+.alerta .tt{font-weight:620;font-size:13px;margin-bottom:2px}
+.alerta .qd{font-size:11.5px;color:var(--ink-muted);font-variant-numeric:tabular-nums}
+.alerta .rk{font-size:12px;color:var(--ink-2);margin-top:5px;line-height:1.5}
+.sev-perigo_potencial .ic{color:var(--warning)}
+.sev-perigo .ic{color:var(--serious)}
+.sev-grande_perigo .ic{color:var(--critical)}
+.sev-observacao .ic{color:var(--ink-muted)}
+.selo{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.04em;
+  text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid var(--ring);
+  color:var(--ink-2);margin-left:7px;vertical-align:2px}
+.risco{display:grid;grid-template-columns:92px 1fr 300px;gap:12px;align-items:center;
+  padding:10px 0;border-bottom:1px solid var(--grid)}
+.risco:last-child{border-bottom:0}
+.risco .dia{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums;
+  overflow:hidden}                      /* trava dura: nada invade a barra */
+.risco .dia .nvtag{display:block;margin-left:0;margin-top:1px}
+.risco .dia .hrs{display:block;font-size:10px;color:var(--ink-muted);margin-top:2px}
+.risco .barra{position:relative;height:14px;background:var(--s0);border-radius:4px;overflow:hidden}
+.risco .barra i{position:absolute;inset:0 auto 0 0;display:block}
+.risco .num{text-align:right;font-variant-numeric:tabular-nums}
+.risco .num .tot{white-space:nowrap}
+.risco .num .tot{font-size:13px;font-weight:650;color:var(--ink)}
+.risco .num .brk{font-size:11.5px;color:var(--ink-muted);margin-top:2px}
+.risco .num .tot .esc{font-weight:400;color:var(--ink-muted)}
+.risco .barra i.normal{background:var(--normal)}
+/* Percentuais SOB a barra, nao dentro: faixa estreita cortaria o texto, e as
+   quantidades ja aparecem na linha da direita. Ponto colorido amarra cada
+   numero a sua faixa sem depender do contraste do texto. */
+.risco .col{min-width:0}
+.risco .pcts{display:flex;flex-wrap:wrap;gap:10px;margin-top:5px;
+  font-size:10px;color:var(--ink-muted);font-variant-numeric:tabular-nums;line-height:1}
+.risco .pcts b{font-weight:600;color:var(--ink-2)}
+.risco .pcts span{display:inline-flex;align-items:center;gap:3px}
+.risco .pcts i{width:6px;height:6px;border-radius:2px;display:inline-block}
+.risco .pcts i.normal{background:var(--normal)}
+.risco .pcts i.vento{background:var(--vento)}
+.risco .pcts i.raio{background:var(--raio)}
+.risco .pcts i.conv{background:var(--conv)}
+.risco .barra i.vento{background:var(--vento)}
+.risco .barra i.raio{background-color:var(--raio);
+  background-image:repeating-linear-gradient(135deg,transparent 0 3px,rgba(255,255,255,.30) 3px 6px)}
+.risco .barra i.conv{background-color:var(--conv);
+  background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(255,255,255,.32) 3px 6px)}
+/* .legenda ja existia para o mapa de calor (flex horizontal). Classe propria
+   para nao sequestrar aquela e virar a fila de cores em coluna. */
+.legrisco{margin-top:15px;padding-top:12px;border-top:1px solid var(--grid);
+  display:grid;gap:7px;font-size:12px;color:var(--ink-2);line-height:1.55}
+.legrisco .sw{display:inline-block;width:11px;height:11px;border-radius:3px;
+  vertical-align:-1px;margin-right:7px}
+.legrisco .sw.normal{background:var(--normal)}
+.legrisco .sw.vento{background:var(--vento)}
+.legrisco .sw.raio{background-color:var(--raio);
+  background-image:repeating-linear-gradient(135deg,transparent 0 2px,rgba(255,255,255,.30) 2px 4px)}
+.legrisco .sw.conv{background-color:var(--conv);
+  background-image:repeating-linear-gradient(45deg,transparent 0 2px,rgba(255,255,255,.32) 2px 4px)}
+.legrisco .esc{color:var(--ink-muted)}
+.legrisco .nvtag{margin-left:0;margin-right:9px}
+.nvtag{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-left:6px}
+.nv-normal   .nvtag{color:var(--ink-muted)}
+.nv-moderado .nvtag{color:var(--warning)}
+.nv-elevado  .nvtag{color:var(--serious)}
+.nv-alto     .nvtag{color:var(--critical)}
+.erro{color:var(--critical)}
+[hidden]{display:none!important}
+@media(max-width:560px){.bar-row{grid-template-columns:70px 1fr 70px}.wrap{padding:16px 14px 48px}
+  .risco{grid-template-columns:1fr;gap:7px}
+  .risco .num{text-align:left}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>TEMPO&#8209;RJ <span>&middot; previs&atilde;o consolidada</span></h1>
+    <div class="meta" id="meta">carregando&hellip;</div>
+  </header>
+
+  <div class="controls">
+    <div class="combo">
+      <input id="mun" type="text" role="combobox" aria-expanded="false"
+             aria-autocomplete="list" aria-controls="munLista" autocomplete="off"
+             spellcheck="false" placeholder="Digite o munic&iacute;pio&hellip;"
+             aria-label="Munic&iacute;pio">
+      <ul id="munLista" role="listbox" aria-label="Munic&iacute;pios" hidden></ul>
+    </div>
+    <button class="ghost" id="btnTab" type="button" aria-expanded="false">Ver tabela</button>
+  </div>
+
+  <div class="card" id="cardAlertas" hidden>
+    <h2>Alertas oficiais vigentes</h2>
+    <p class="hint">Emitidos pelo INMET. N&atilde;o entram no c&aacute;lculo da probabilidade &mdash;
+      &oacute;rg&atilde;o oficial <b>sobrep&otilde;e</b> a previs&atilde;o, n&atilde;o vota nela.</p>
+    <div id="alertas"></div>
+  </div>
+
+  <div class="card">
+    <div class="hero" id="hero"></div>
+  </div>
+
+  <div class="card" id="cardTempo">
+    <h2>Como o tempo deve ficar, hora a hora</h2>
+    <p class="hint">O desenho vem da <b>mediana das 8 fam&iacute;lias</b> &mdash; cobertura de nuvem
+      e chuva na mesma hora. Chuva manda no &iacute;cone; sem chuva, quem decide &eacute; a nuvem.
+      Passe o mouse para os n&uacute;meros.</p>
+    <div class="hm" id="tempoHm"></div>
+    <div class="tleg" id="tempoLeg" hidden>
+      <span><svg class="wic"><use href="#i-sol"/></svg>sol</span>
+      <span><svg class="wic"><use href="#i-parcial"/></svg>sol entre nuvens</span>
+      <span><svg class="wic"><use href="#i-nublado"/></svg>nublado</span>
+      <span><svg class="wic"><use href="#i-encoberto"/></svg>encoberto</span>
+      <span><svg class="wic"><use href="#i-garoa"/></svg>garoa</span>
+      <span><svg class="wic"><use href="#i-chuva"/></svg>chuva</span>
+      <span><svg class="wic"><use href="#i-forte"/></svg>chuva forte</span>
+      <span><svg class="wic"><use href="#i-tempestade"/></svg>tempestade</span>
+      <span><svg class="wic"><use href="#i-lua"/></svg>noite limpa</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Probabilidade de chuva, hora a hora</h2>
+    <p class="hint">Cada c&eacute;lula &eacute; uma hora. A cor mostra quantas das 8 fam&iacute;lias de modelo,
+      independentes entre si, preveem chuva. Passe o mouse para os detalhes.</p>
+    <div class="hm" id="hm"></div>
+    <div class="legenda">
+      <span>0 de 8</span>
+      <i style="background:var(--s0)"></i><i style="background:var(--s1)"></i>
+      <i style="background:var(--s2)"></i><i style="background:var(--s3)"></i>
+      <i style="background:var(--s4)"></i><i style="background:var(--s5)"></i>
+      <i style="background:var(--s6)"></i><i style="background:var(--s7)"></i>
+      <i style="background:var(--s8)"></i>
+      <span>8 de 8 preveem chuva</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Chuva acumulada por dia</h2>
+    <p class="hint"><b>Os mil&iacute;metros s&atilde;o o n&uacute;mero central do dia:</b> metade das fam&iacute;lias
+      de modelo prev&ecirc; mais que isso, metade prev&ecirc; menos.<br>
+      <b>A concord&acirc;ncia diz o quanto confiar nele</b> &mdash; a fra&ccedil;&atilde;o de fam&iacute;lias que caem
+      at&eacute; 40% em torno desse valor. 75% quer dizer que quase todas apontam para l&aacute;;
+      <b>50% quer dizer que metade aponta para outro lugar</b>, e a&iacute; o n&uacute;mero central &eacute; um
+      palpite &mdash; aparece destacado.<br>
+      Em <b>dia seco n&atilde;o h&aacute; volume sobre o que discordar</b>, ent&atilde;o a pergunta muda: a linha
+      passa a mostrar quantas fam&iacute;lias veem chuva.</p>
+    <div class="bars" id="bars"></div>
+  </div>
+
+  <div class="card" id="cardPanorama" hidden>
+    <h2>Panorama do estado</h2>
+    <p class="hint">Onde o risco est&aacute; maior nos pr&oacute;ximos dias, entre os 92 munic&iacute;pios &mdash;
+      a &uacute;nica leitura desta p&aacute;gina que n&atilde;o &eacute; de um munic&iacute;pio s&oacute;.<br>
+      O percentual &eacute; a <b>chance de ser um dia ruim</b> &mdash; ou seja, de o dia entrar nos
+      <b>10% piores daquele munic&iacute;pio</b>. Num dia qualquer essa chance &eacute; de 10%, ent&atilde;o
+      30% &eacute; o triplo do normal. Em cada coluna o munic&iacute;pio aparece uma vez s&oacute;.</p>
+    <div class="pan3" id="pan3"></div>
+    <div class="conces" id="conces"></div>
+  </div>
+
+  <div class="card" id="cardMes" hidden>
+    <h2>Chuva x normal do m&ecirc;s</h2>
+    <p class="hint">O mesmo volume em mil&iacute;metros pesa diferente em cada lugar: 30 mm &eacute;
+      rotina em Paraty e &eacute; muito em Itaperuna. Aqui cada dia aparece como <b>fra&ccedil;&atilde;o do que
+      aquele m&ecirc;s costuma trazer no m&ecirc;s inteiro</b>, no pr&oacute;prio munic&iacute;pio.<br>
+      <b>A escala &eacute; fixa: barra cheia = 100% do m&ecirc;s em um &uacute;nico dia.</b> Quanto mais perto
+      disso, maior o impacto esperado.</p>
+    <div id="mes"></div>
+    <div class="mes-tot" id="mesTot"></div>
+  </div>
+
+  <div class="card" id="cardRisco" hidden>
+    <h2>Risco de impacto el&eacute;trico</h2>
+    <p class="hint">Quanto o <b>tempo</b> deve somar &agrave; rotina normal do munic&iacute;pio.
+      Cada causa &eacute; medida contra o <b>seu pr&oacute;prio driver</b> e os excedentes
+      <b>se somam</b> &mdash; vento/&aacute;rvore pela rajada, descarga atmosf&eacute;rica pela
+      intensidade da chuva, convec&ccedil;&atilde;o pelo CAPE. Calibrado contra <b>4 anos</b> da ANEEL
+      (2023&ndash;2026), 92 munic&iacute;pios, <b>123.648 dias</b>.</p>
+    <div id="risco"></div>
+
+    <div class="legrisco">
+      <div><i class="sw normal"></i><b>Normal do munic&iacute;pio</b> &mdash; a rotina daquele dia da
+        semana, que o tempo n&atilde;o explica: falha de equipamento, defeito, desgaste. &Eacute; a maior
+        parte de quase todo dia.</div>
+      <div><i class="sw vento"></i><b>Vento / queda de &aacute;rvore</b> &mdash; medido pela rajada
+        m&aacute;xima do dia.</div>
+      <div><i class="sw raio"></i><b>Descarga atmosf&eacute;rica</b> &mdash; medida pela intensidade
+        hor&aacute;ria da chuva.</div>
+      <div><i class="sw conv"></i><b>Convec&ccedil;&atilde;o</b> &mdash; medida pelo <b>CAPE</b>, a energia
+        dispon&iacute;vel para tempestade. Entra desde 11/09: sozinho ele n&atilde;o bate a chuva como
+        preditor, mas <b>somado a ela</b> acerta mais, porque os dois quase n&atilde;o se
+        sobrep&otilde;em.<br>
+        Os tr&ecirc;s <b>se somam</b> na barra &mdash; s&atilde;o mecanismos distintos, medidos cada um
+        contra o seu pr&oacute;prio driver, nunca multiplicando um pelo outro.</div>
+      <div><b>O n&uacute;mero &agrave; direita &eacute; a chance de o dia entrar nos 10% piores deste
+        munic&iacute;pio.</b> Num dia qualquer essa chance &eacute; 10% &mdash; &eacute; o que significa "os 10%
+        piores". Acima disso, o tempo est&aacute; carregando. Medido: quando o modelo aponta
+        44%, 44% dos dias assim de fato foram ruins em 2025.</div>
+      <div>Faixas: <span class="nv-normal"><b class="nvtag">normal</b> at&eacute; 10%</span><span class="nv-moderado"><b class="nvtag">moderado</b> 10&ndash;18%</span><span class="nv-elevado"><b class="nvtag">elevado</b> 18&ndash;35%</span><span class="nv-alto"><b class="nvtag">alto</b> 35%+</span></div>
+      <div class="esc"><b>Todas as barras t&ecirc;m o mesmo comprimento</b>, de prop&oacute;sito: cada uma
+        &eacute; o total daquele dia, e o que muda &eacute; a <b>composi&ccedil;&atilde;o</b>. Assim d&aacute; para comparar
+        a propor&ccedil;&atilde;o entre dias, e n&atilde;o o tamanho deles &mdash; barra quase toda neutra &eacute; dia
+        comum; faixa colorida grande &eacute; dia em que o tempo pesa. Os percentuais ficam
+        <b>sob a barra</b>, e o tamanho do dia no n&uacute;mero de ocorr&ecirc;ncias, &agrave; direita.<br>
+        O n&uacute;mero de ocorr&ecirc;ncias &eacute; o valor <b>esperado</b>; num dia ruim o real costuma
+        passar dele, e &eacute; por isso que a chance existe como n&uacute;mero separado.<br>
+        Quando um dia aparece com <b>menos de 24 h</b>, a previs&atilde;o ainda n&atilde;o cobre o dia
+        inteiro &mdash; o horizonte &eacute; de 5 dias rolantes a partir da coleta.</div>
+    </div>
+
+    <p class="hint" style="margin:14px 0 0">
+      <b>Ocorr&ecirc;ncia = chamado de cliente</b> (98,6% s&atilde;o reclama&ccedil;&atilde;o do consumidor), n&atilde;o
+      cliente sem energia: um mesmo desligamento gera v&aacute;rios chamados.<br><br>
+      S&oacute; <b>5,8%</b> dos chamados t&ecirc;m causa meteorol&oacute;gica &mdash; o resto &eacute; falha de
+      equipamento, que o tempo n&atilde;o prev&ecirc;. Por isso o sistema separa o <b>normal do
+      dia</b> (que ele n&atilde;o prediz) do <b>acr&eacute;scimo do tempo</b> (que ele prediz).<br><br>
+      Vento, descarga e convec&ccedil;&atilde;o s&atilde;o mecanismos distintos e <b>somam</b> &mdash; cada um
+      medido contra o seu pr&oacute;prio driver, nunca multiplicando um pelo outro.<br><br>
+      <b>O r&oacute;tulo de causa da distribuidora n&atilde;o &eacute; usado para dimensionar nada.</b> Ele &eacute;
+      pouco confi&aacute;vel: numa tempestade, muita queda de &aacute;rvore entra no sistema como falha
+      de equipamento. Por isso os coeficientes s&atilde;o ajustados contra o <b>total observado</b>
+      do dia, e n&atilde;o contra a contagem de chamados rotulados como clima.<br><br>
+      Isso tem limite, e vale dizer: o tempo explica cerca de <b>13%</b> da varia&ccedil;&atilde;o que
+      sobra depois de descontar o porte do munic&iacute;pio e o dia da semana. O resto &eacute; falha
+      de equipamento e rotina, que previs&atilde;o nenhuma alcan&ccedil;a.</p>
+    <p class="hint" id="impactoVerif" style="margin-top:13px;padding-top:11px;border-top:1px solid var(--grid)"></p>
+  </div>
+
+  <div class="card" id="cardTab" hidden>
+    <h2>Tabela</h2>
+    <p class="hint">Mesmos dados em texto, para leitura assistiva e confer&ecirc;ncia.</p>
+    <div style="overflow-x:auto"><table class="tab" id="tab"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Como ler isto</h2>
+    <p class="aviso">
+      <b>A porcentagem n&atilde;o &eacute; a "chance de chover" de um aplicativo.</b> &Eacute; quantas das
+      8 fam&iacute;lias de modelo preveem chuva naquela hora. 6 de 8 prevendo chuva = 75%.<br><br>
+
+      <b>0% n&atilde;o &eacute; desacordo &mdash; &eacute; acordo ao contr&aacute;rio.</b> A conta &eacute; de
+      quantas fam&iacute;lias veem chuva, n&atilde;o de quanto elas concordam entre si. Em 0%
+      as oito concordam que <b>n&atilde;o</b> chove, e essa &eacute; a previs&atilde;o mais firme que
+      existe. A d&uacute;vida de verdade mora perto de 50%, onde metade vota de cada lado.<br><br>
+
+      <b>Por que fam&iacute;lias, e n&atilde;o fontes.</b> Doze aplicativos de previs&atilde;o podem estar todos
+      lendo o mesmo GFS por baixo. Isso &eacute; uma opini&atilde;o repetida doze vezes, n&atilde;o doze
+      opini&otilde;es. Aqui cada fam&iacute;lia vota uma vez: ECMWF, NOAA, DWD, ECCC,
+      M&eacute;t&eacute;o&#8209;France, JMA, UKMO e CMA.<br><br>
+
+      <b>Quando os modelos discordam, voc&ecirc; enxerga.</b> Nada &eacute; achatado numa m&eacute;dia para
+      parecer mais firme do que &eacute;. Dispers&atilde;o larga quer dizer uma coisa pr&aacute;tica: hoje
+      o n&uacute;mero central vale pouco, decida pela faixa e n&atilde;o pelo ponto.<br><br>
+
+      <b>Quem acerta mais passa a pesar mais.</b> O painel mede o erro de cada fam&iacute;lia
+      contra a chuva observada e d&aacute; mais voto a quem erra menos &mdash; mas s&oacute; dentro de
+      cada regi&atilde;o e faixa de horizonte, e s&oacute; depois de acumular evid&ecirc;ncia suficiente
+      ali. Nenhuma fam&iacute;lia &eacute; silenciada: o piso de peso existe porque o modelo pior na
+      m&eacute;dia pode ser o &uacute;nico a acertar o evento raro.<br><br>
+
+      <b>E o painel confere a si mesmo.</b> De todas as vezes que ele anunciou cada
+      porcentagem, quantas terminaram em chuva de verdade? A resposta est&aacute; no bot&atilde;o
+      abaixo, inclusive quando ela &eacute; desfavor&aacute;vel &mdash; e hoje ela &eacute;.
+    </p>
+    <p class="aviso" id="statusSkill" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--grid)"></p>
+    <button class="ghost" id="btnApr" type="button" aria-expanded="false"
+            style="margin-top:12px;font-size:12.5px;padding:6px 10px">Ver o andamento e o desempenho</button>
+    <div id="aprWrap" hidden style="margin-top:14px">
+      <h3 class="sub2">Andamento &mdash; quanto falta para o peso passar a valer</h3>
+      <p class="hint">Cada linha &eacute; um grupo que compete separado: os 8 modelos
+        disputam <b>dentro</b> de uma regi&atilde;o e de uma faixa de horizonte. Um modelo
+        s&oacute; ganha peso ali quando as <b>duas</b> travas fecham &mdash; 30 compara&ccedil;&otilde;es
+        <b>e</b> 72 horas distintas. A segunda &eacute; a que demora, e &eacute; ela que impede
+        um &uacute;nico temporal de eleger um favorito.</p>
+      <p class="aviso" id="aprResumo" style="margin:0 0 12px">lendo&hellip;</p>
+      <div style="overflow-x:auto"><table class="tab" id="aprTab"></table></div>
+
+      <h3 class="sub2">Desempenho &mdash; como cada fam&iacute;lia vem se saindo</h3>
+      <p class="hint"><b>Medido, mas ainda sem efeito.</b> O sistema j&aacute; sabe quem erra menos
+        muito antes de poder agir sobre isso &mdash; e n&atilde;o age at&eacute; as duas travas acima
+        fecharem. Esconder a medi&ccedil;&atilde;o at&eacute; l&aacute; seria pior do que mostr&aacute;-la dizendo
+        que ela &eacute; provis&oacute;ria.<br>
+        <b>Erro m&eacute;dio</b> &eacute; a diferen&ccedil;a t&iacute;pica entre a chuva prevista e a medida, em
+        mil&iacute;metros por hora &mdash; menor &eacute; melhor. O <b>vi&eacute;s</b> diz para que lado o
+        modelo erra: positivo prev&ecirc; mais chuva do que cai, negativo prev&ecirc; menos.</p>
+      <div style="overflow-x:auto"><table class="tab" id="despTab"></table></div>
+
+      <h3 class="sub2">Calibra&ccedil;&atilde;o &mdash; o painel diz X, a realidade fez Y</h3>
+      <p class="hint">Esta &eacute; a confer&ecirc;ncia mais dura que o painel faz de si mesmo:
+        de todas as vezes que ele anunciou cada porcentagem, <b>quantas acabaram em
+        chuva de verdade</b> na esta&ccedil;&atilde;o mais pr&oacute;xima.<br>
+        Parte da diferen&ccedil;a <b>n&atilde;o &eacute; erro do modelo</b>: ele prev&ecirc; chuva numa
+        c&eacute;lula de 13 a 25 km e o pluvi&ocirc;metro mede um ponto: &aacute;rea contra ponto
+        derruba a frequ&ecirc;ncia observada por constru&ccedil;&atilde;o. Mas para quem l&ecirc; o painel
+        o efeito &eacute; o mesmo, e o princ&iacute;pio da casa &eacute; declarar.</p>
+      <p class="aviso" id="calResumo" style="margin:0 0 12px">lendo&hellip;</p>
+      <div style="overflow-x:auto"><table class="tab" id="calTab"></table></div>
+    </div>
+  </div>
+
+  <footer>
+    Modelos via Open&#8209;Meteo &middot; coleta a cada 6 h (ciclos 00/06/12/18 UTC) &middot; 92 munic&iacute;pios do RJ.<br>
+    Uso pessoal. N&atilde;o substitui alertas oficiais da Defesa Civil, do INMET ou do CEMADEN.<br>
+    Interrup&ccedil;&otilde;es de energia em tempo real (consulta manual, painel da ANEEL):
+    <a href="https://portalrelatorios.aneel.gov.br/hubDistribuicao/monitoramentoInterrupcoesFornecimentoBrasil" target="_blank" rel="noopener"
+       style="color:var(--accent)">Monitoramento de Interrup&ccedil;&otilde;es</a>.
+  </footer>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-sol" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="4.4" fill="var(--sol)"/>
+    <g stroke="var(--sol)" stroke-width="1.8" stroke-linecap="round">
+      <path d="M12 2.6v2.4M12 19v2.4M2.6 12H5M19 12h2.4M5.3 5.3 7 7M17 17l1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7"/>
+    </g>
+  </symbol>
+  <symbol id="i-lua" viewBox="0 0 24 24">
+    <path d="M20.5 15.2A8.6 8.6 0 0 1 9.4 4.1a8.6 8.6 0 1 0 11.1 11.1z" fill="var(--lua)"/>
+  </symbol>
+  <symbol id="i-parcial" viewBox="0 0 24 24">
+    <circle cx="8.6" cy="8.2" r="3.4" fill="var(--sol)"/>
+    <g stroke="var(--sol)" stroke-width="1.6" stroke-linecap="round">
+      <path d="M8.6 1.9v1.6M2.3 8.2h1.6M4.1 3.7l1.2 1.2M13.1 3.7l-1.2 1.2"/>
+    </g>
+    <path d="M9.6 20h8.2a3.2 3.2 0 0 0 .3-6.4 4.7 4.7 0 0 0-9-1.1A3.4 3.4 0 0 0 9.6 20z"
+          fill="currentColor"/>
+  </symbol>
+  <symbol id="i-parcial-noite" viewBox="0 0 24 24">
+    <path d="M14.4 9.6A5.7 5.7 0 0 1 7.1 2.3a5.7 5.7 0 1 0 7.3 7.3z" fill="var(--lua)"/>
+    <path d="M9.6 20h8.2a3.2 3.2 0 0 0 .3-6.4 4.7 4.7 0 0 0-9-1.1A3.4 3.4 0 0 0 9.6 20z"
+          fill="currentColor"/>
+  </symbol>
+  <symbol id="i-nublado" viewBox="0 0 24 24">
+    <path d="M7.4 19h9.2a3.6 3.6 0 0 0 .3-7.2 5.2 5.2 0 0 0-10-1.3A3.8 3.8 0 0 0 7.4 19z"
+          fill="currentColor"/>
+  </symbol>
+  <symbol id="i-encoberto" viewBox="0 0 24 24">
+    <path d="M6.4 13.4h8.4a3.1 3.1 0 0 0 .3-6.2 4.6 4.6 0 0 0-8.8-1.1 3.3 3.3 0 0 0 .1 7.3z"
+          fill="currentColor" opacity=".45"/>
+    <path d="M8.4 20h9.2a3.6 3.6 0 0 0 .3-7.2 5.2 5.2 0 0 0-10-1.3A3.8 3.8 0 0 0 8.4 20z"
+          fill="currentColor"/>
+  </symbol>
+  <symbol id="i-garoa" viewBox="0 0 24 24">
+    <path d="M7.4 15.4h9.2a3.5 3.5 0 0 0 .3-7 5.1 5.1 0 0 0-9.8-1.3 3.7 3.7 0 0 0 .3 8.3z"
+          fill="currentColor"/>
+    <g stroke="var(--gota)" stroke-width="1.8" stroke-linecap="round">
+      <path d="M10 18.2v1.6M14 18.2v1.6"/>
+    </g>
+  </symbol>
+  <symbol id="i-chuva" viewBox="0 0 24 24">
+    <path d="M7.4 15.4h9.2a3.5 3.5 0 0 0 .3-7 5.1 5.1 0 0 0-9.8-1.3 3.7 3.7 0 0 0 .3 8.3z"
+          fill="currentColor"/>
+    <g stroke="var(--gota)" stroke-width="1.8" stroke-linecap="round">
+      <path d="M8.4 17.9 7.6 21M12 17.9 11.2 21M15.6 17.9 14.8 21"/>
+    </g>
+  </symbol>
+  <symbol id="i-forte" viewBox="0 0 24 24">
+    <path d="M7.4 15.4h9.2a3.5 3.5 0 0 0 .3-7 5.1 5.1 0 0 0-9.8-1.3 3.7 3.7 0 0 0 .3 8.3z"
+          fill="currentColor"/>
+    <g stroke="var(--gota)" stroke-width="2.1" stroke-linecap="round">
+      <path d="M7.2 17.6 6.2 21.4M10.4 17.6 9.4 21.4M13.6 17.6l-1 3.8M16.8 17.6l-1 3.8"/>
+    </g>
+  </symbol>
+  <symbol id="i-tempestade" viewBox="0 0 24 24">
+    <path d="M7.4 14.6h9.2a3.5 3.5 0 0 0 .3-7 5.1 5.1 0 0 0-9.8-1.3 3.7 3.7 0 0 0 .3 8.3z"
+          fill="currentColor"/>
+    <path d="M12.8 15.4 9.2 20.4h2.6l-.7 2.6 4-5.8h-2.7z" fill="var(--warning)"/>
+    <g stroke="var(--gota)" stroke-width="1.8" stroke-linecap="round">
+      <path d="M8 17.2 7.2 20.4"/>
+    </g>
+  </symbol>
+</defs></svg>
+
+<script>
+const API = "https://hmwevcpcelmwnonbeojy.supabase.co/rest/v1";
+const KEY = "sb_publishable_6Fsy4PJ2_smg55pujx4RhQ__6Zn9DHD";
+const H = { apikey: KEY, Authorization: "Bearer " + KEY };
+const FAMILIAS = 8;
+
+const $ = (s) => document.querySelector(s);
+const ls = {
+  get(k){ try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v){ try { localStorage.setItem(k, v); } catch (e) {} }
+};
+const nf = (n, d) => Number(n).toLocaleString("pt-BR", {
+  minimumFractionDigits: d === undefined ? 1 : d,
+  maximumFractionDigits: d === undefined ? 1 : d
+});
+const diaSem = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
+const dd = (n) => String(n).padStart(2, "0");
+
+async function api(path){
+  const r = await fetch(API + path, { headers: H });
+  if (!r.ok) throw new Error("HTTP " + r.status + " - " + (await r.text()).slice(0, 120));
+  return r.json();
+}
+
+let MUNS = [];
+
+
+// ---------------------------------------------------------------- tooltip
+const tip = $("#tip");
+function mostrarTip(e, titulo, corpo){
+  tip.innerHTML = "<b>" + titulo + "</b><span>" + corpo + "</span>";
+  tip.style.opacity = "1";
+  const r = tip.getBoundingClientRect();
+  let x = e.clientX + 14, y = e.clientY + 14;
+  if (x + r.width  > window.innerWidth  - 8) x = e.clientX - r.width  - 14;
+  if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - 14;
+  tip.style.left = x + "px";
+  tip.style.top  = y + "px";
+}
+function esconderTip(){ tip.style.opacity = "0"; }
+
+/* ---- Calibracao medida -----------------------------------------------
+   O sistema media isto todo dia desde o inicio e nunca mostrava. A tabela nao
+   depende de municipio nenhum — e a mesma para o estado inteiro —, entao
+   carrega uma vez e fica em memoria.
+
+   O que ela diz, em 2026-09-28: quando as 8 familias concordam que chove,
+   chove em 43% das vezes. Parte disso e escala (modelo preve celula de
+   13-25 km, pluviometro mede ponto), parte e excesso de confianca. Para quem
+   le o painel, o efeito e o mesmo, e a 5.4 manda declarar. */
+let CALIB = [];
+
+async function carregarCalibracao(){
+  try { CALIB = await api("/tempo_calibracao?select=*&order=prob_painel.asc"); }
+  catch (e) { CALIB = []; console.error(e); }
+}
+
+// Busca pela probabilidade MAIS PROXIMA, nao pelo indice: se um dia entrar uma
+// nona familia, as fracoes deixam de ser k/8 e um indice fixo apontaria errado.
+function freqMedida(prob){
+  if (!CALIB.length) return null;
+  let melhor = CALIB[0], dist = Math.abs(+CALIB[0].prob_painel - prob);
+  for (const c of CALIB){
+    const d = Math.abs(+c.prob_painel - prob);
+    if (d < dist){ dist = d; melhor = c; }
+  }
+  return melhor;
+}
+const pctMedida = (prob) => {
+  const c = freqMedida(prob);
+  return c ? Math.round(100 * (+c.freq_observada)) : null;
+};
+
+// ----------------------------------------------------------------- render
+function renderHero(linhas){
+  const j6  = linhas.filter((d) => d.horizonte_h >= 0 && d.horizonte_h <= 6);
+  const j24 = linhas.filter((d) => d.horizonte_h >= 0 && d.horizonte_h <= 24);
+  if (!j6.length){
+    $("#hero").innerHTML = "<div class='tile'><div class='sub erro'>Sem dados para as próximas horas.</div></div>";
+    return;
+  }
+  const maxP     = Math.max.apply(null, j6.map((d) => +d.prob_chuva));
+  const maxForte = Math.max.apply(null, j24.map((d) => +d.prob_chuva_forte));
+  const chuva24  = j24.reduce((s, d) => s + (+d.precip_mediana), 0);
+  const raj      = Math.max.apply(null, j24.map((d) => +d.rajada_max));
+  const k        = Math.round(maxP * FAMILIAS);
+
+  const dots = Array.from({ length: FAMILIAS }, (_, i) =>
+    '<i class="dot' + (i < k ? " on" : "") + '"></i>').join("");
+
+  // A contagem e de QUEM VE CHUVA, nao de quem concorda. Em k=0 as oito
+  // familias concordam — no sentido contrario —, e escrever "0 de 8 concordam"
+  // dizia o oposto do que os dados dizem. A palavra "concordam" fica reservada
+  // ao voto unanime; fora dele, a linha declara os dois lados.
+  const consenso = k === 0        ? "as " + FAMILIAS + " concordam: tempo seco"
+                 : k === FAMILIAS ? "as " + FAMILIAS + " concordam: chove"
+                 : k + " de " + FAMILIAS + " preveem chuva &middot; " +
+                   (FAMILIAS - k) + " n&atilde;o";
+
+  // A fracao de concordancia responde "quantos modelos acham que chove".
+  // A frequencia medida responde "o que aconteceu das outras vezes que o
+  // painel disse isto". Sao perguntas diferentes e as duas cabem.
+  const fm = pctMedida(maxP);
+  const medida = fm === null ? ""
+    : "<div class='sub' style='color:var(--ink-muted)'>historicamente, isto virou chuva em <b>" +
+      fm + "%</b> das vezes</div>";
+
+  const tmax = j24.length ? Math.max.apply(null, j24.map((d) => +d.temp_mediana)) : null;
+  const tmin = j24.length ? Math.min.apply(null, j24.map((d) => +d.temp_mediana)) : null;
+
+  $("#hero").innerHTML =
+    '<div class="tile"><div class="lbl">Chuva nas próximas 6 h</div>' +
+      '<div class="val">' + Math.round(maxP * 100) + '%</div>' +
+      '<div class="consenso">' + dots + '</div>' +
+      '<div class="sub">' + consenso + "</div>" + medida + "</div>" +
+    '<div class="tile"><div class="lbl">Chuva forte em 24 h</div>' +
+      '<div class="val">' + Math.round(maxForte * 100) + '%</div>' +
+      '<div class="sub">acima de 15 mm em uma hora</div></div>' +
+    '<div class="tile"><div class="lbl">Acumulado 24 h</div>' +
+      '<div class="val">' + nf(chuva24) + '<span style="font-size:16px;color:var(--ink-muted)"> mm</span></div>' +
+      '<div class="sub">mediana das linhagens</div></div>' +
+    '<div class="tile"><div class="lbl">Rajada máxima 24 h</div>' +
+      '<div class="val">' + Math.round(raj) + '<span style="font-size:16px;color:var(--ink-muted)"> km/h</span></div>' +
+      '<div class="sub">' + (raj >= 60
+        ? '<span class="tag serious">risco de queda de rede</span>'
+        : "dentro do normal") + '</div></div>' +
+    // Temperatura estava fora do painel inteiro. Em 2026-09-28, com alerta de
+    // GRANDE PERIGO por onda de calor vigente, os quatro numeros do topo eram
+    // 0%, 0%, 0,0 mm e 48 km/h — a historia do dia ficava invisivel.
+    (tmax === null || !isFinite(tmax) ? "" :
+      '<div class="tile"><div class="lbl">Temperatura 24 h</div>' +
+        '<div class="val">' + Math.round(tmax) +
+        '<span style="font-size:16px;color:var(--ink-muted)"> °C</span></div>' +
+        '<div class="sub">máxima &middot; mínima de ' + Math.round(tmin) + ' °C</div>' +
+        // Sem tag de "calor extremo" por limiar fixo: o alerta do INMET ja
+        // esta no cartao de cima e, pela 5.3, orgao oficial SOBREPOE a
+        // previsao. Um limiar meu que nao dispara durante um GRANDE PERIGO
+        // vigente seria lido como "nao ha problema" — a 5.8 de novo.
+      '</div>');
+}
+
+/* ---- Tira de condicao do tempo ---------------------------------------
+   So probabilidade de chuva deixava o dia bom todo apagado, e apagado se
+   confunde com "faltou dado". Este cartao responde a outra pergunta — como o
+   ceu deve estar — para que a ausencia de chuva tenha desenho proprio.
+
+   A ordem das regras importa: chuva prevalece sobre nuvem, porque chove
+   justamente com o ceu carregado e mostrar "encoberto" numa hora de chuva
+   esconderia o que interessa. */
+function condicao(d, hora){
+  const p = +d.precip_mediana;
+  const noite = hora < 6 || hora >= 18;   // Rio fica no tropico: nasce ~6h,
+                                          // poe ~18h o ano todo, com folga de
+                                          // meia hora. Nao vale puxar efemeride.
+  if (+d.prob_chuva_forte >= 0.5 || p >= 15) return ["i-tempestade", "tempestade"];
+  if (p >= 5)   return ["i-forte",  "chuva forte"];
+  if (p >= 0.5) return ["i-chuva",  "chuva"];
+  if (p >= 0.1) return ["i-garoa",  "garoa"];
+  const n = d.nuvem_pct;
+  // Sem cobertura de nuvem nao da para distinguir sol de encoberto. Desenhar
+  // um sol nesse caso seria inventar: a celula fica vazia e o tooltip explica.
+  if (n === null || n === undefined) return [null, "cobertura de nuvem ainda não coletada"];
+  if (n >= 85) return ["i-encoberto", "encoberto"];
+  if (n >= 50) return ["i-nublado",   "nublado"];
+  if (n >= 20) return noite ? ["i-parcial-noite", "poucas nuvens"]
+                            : ["i-parcial", "sol entre nuvens"];
+  return noite ? ["i-lua", "noite limpa"] : ["i-sol", "sol"];
+}
+
+function renderTempo(linhas){
+  const temNuvem = linhas.some((d) => d.nuvem_pct !== null && d.nuvem_pct !== undefined);
+  const leg = $("#tempoLeg");
+  if (!temNuvem){
+    leg.hidden = true;
+    $("#tempoHm").innerHTML =
+      '<p class="hint" style="margin:0">A cobertura de nuvem comecou a ser coletada agora. ' +
+      "Enquanto o primeiro ciclo nao fecha, este cartao ficaria s&oacute; com &iacute;cones de chuva " +
+      "e nada para os dias bons &mdash; que &eacute; exatamente o problema que ele existe para resolver. " +
+      "Volta sozinho na pr&oacute;xima coleta.</p>";
+    return;
+  }
+  leg.hidden = false;
+
+  const porDia = new Map();
+  for (const d of linhas){
+    const t = new Date(d.valido_em);
+    const chave = t.getFullYear() + "-" + dd(t.getMonth() + 1) + "-" + dd(t.getDate());
+    if (!porDia.has(chave)) porDia.set(chave, new Array(24).fill(null));
+    porDia.get(chave)[t.getHours()] = d;
+  }
+  let html = '<table><colgroup><col class="cday"><col span="24"></colgroup>' +
+             "<thead><tr><th></th>";
+  for (let h = 0; h < 24; h++) html += "<th>" + (h % 3 === 0 ? dd(h) : "") + "</th>";
+  html += "</tr></thead><tbody>";
+  for (const par of Array.from(porDia.entries()).slice(0, 6)){
+    const dt = new Date(par[0] + "T12:00:00");
+    html += '<tr><td class="day">' + diaSem[dt.getDay()] + " " + dd(dt.getDate()) +
+            "/" + dd(dt.getMonth() + 1) + "</td>";
+    for (let h = 0; h < 24; h++){
+      const d = par[1][h];
+      if (!d){ html += '<td><div class="tcell vazio"></div></td>'; continue; }
+      const c = condicao(d, h);
+      html += '<td><div class="tcell" data-i="' + d.valido_em + '">' +
+              (c[0] ? '<svg class="wic"><use href="#' + c[0] + '"/></svg>' : "") +
+              "</div></td>";
+    }
+    html += "</tr>";
+  }
+  $("#tempoHm").innerHTML = html + "</tbody></table>";
+
+  const idx = new Map(linhas.map((d) => [d.valido_em, d]));
+  const el = $("#tempoHm");
+  el.onmousemove = function (e){
+    const c = e.target.closest ? e.target.closest(".tcell[data-i]") : null;
+    if (!c){ esconderTip(); return; }
+    const d = idx.get(c.getAttribute("data-i"));
+    if (!d) return;
+    const t = new Date(d.valido_em);
+    const nome = condicao(d, t.getHours())[1];
+    mostrarTip(e,
+      dd(t.getHours()) + ":00 &middot; " + diaSem[t.getDay()] + " " + t.getDate(),
+      "<b>" + nome + "</b><br>" +
+      (d.nuvem_pct == null ? "" : "c&eacute;u " + Math.round(d.nuvem_pct) + "% coberto<br>") +
+      "chuva " + nf(d.precip_mediana) + " mm na hora" +
+      (d.temp_mediana == null ? "" : " &middot; " + nf(d.temp_mediana) + " &deg;C"));
+  };
+  el.onmouseleave = esconderTip;
+}
+
+function renderHeatmap(linhas){
+  const porDia = new Map();
+  for (const d of linhas){
+    const t = new Date(d.valido_em);
+    const chave = t.getFullYear() + "-" + dd(t.getMonth() + 1) + "-" + dd(t.getDate());
+    if (!porDia.has(chave)) porDia.set(chave, new Array(24).fill(null));
+    porDia.get(chave)[t.getHours()] = d;
+  }
+  let html = '<table><colgroup><col class="cday"><col span="24"></colgroup>' +
+             "<thead><tr><th></th>";
+  for (let h = 0; h < 24; h++) html += "<th>" + (h % 3 === 0 ? dd(h) : "") + "</th>";
+  html += "</tr></thead><tbody>";
+  for (const par of Array.from(porDia.entries()).slice(0, 6)){
+    const dt = new Date(par[0] + "T12:00:00");
+    html += '<tr><td class="day">' + diaSem[dt.getDay()] + " " + dd(dt.getDate()) + "/" + dd(dt.getMonth() + 1) + "</td>";
+    for (const d of par[1]){
+      if (!d){ html += '<td><div class="cell vazio"></div></td>'; continue; }
+      const k = Math.round(+d.prob_chuva * FAMILIAS);
+      html += '<td><div class="cell" data-k="' + k + '" data-i="' + d.valido_em + '"></div></td>';
+    }
+    html += "</tr>";
+  }
+  $("#hm").innerHTML = html + "</tbody></table>";
+
+  const idx = new Map(linhas.map((d) => [d.valido_em, d]));
+  const hm = $("#hm");
+  hm.onmousemove = function (e){
+    const c = e.target.closest ? e.target.closest(".cell[data-i]") : null;
+    if (!c){ esconderTip(); return; }
+    const d = idx.get(c.getAttribute("data-i"));
+    if (!d) return;
+    const t = new Date(d.valido_em);
+    const k = Math.round(+d.prob_chuva * FAMILIAS);
+    mostrarTip(e,
+      dd(t.getHours()) + ":00 &middot; " + diaSem[t.getDay()] + " " + t.getDate(),
+      k + " de " + FAMILIAS + " fam&iacute;lias preveem chuva" +
+      (pctMedida(+d.prob_chuva) === null ? ""
+        : " &middot; medido: " + pctMedida(+d.prob_chuva) + "% viraram chuva") + "<br>" +
+      "mediana " + nf(d.precip_mediana) + " mm &middot; max " + nf(d.precip_max) + " mm<br>" +
+      "dispers&atilde;o " + nf(d.dispersao_precip) + " mm &middot; rajada " + Math.round(d.rajada_max) + " km/h");
+  };
+  hm.onmouseleave = esconderTip;
+}
+
+function renderBarras(dias){
+  if (!dias || !dias.length){ $("#bars").innerHTML = ""; return; }
+  const teto = Math.max.apply(null, [6].concat(dias.map((d) => +d.mm_dia)));
+  $("#bars").innerHTML = dias.slice(0, 6).map(function (d){
+    const dt = new Date(d.dia + "T12:00:00");
+    const larg = Math.min(100, ((+d.mm_dia) / teto) * 100);
+    // Em dia seco nao existe concordancia de VOLUME — a pergunta daquele dia e
+    // outra: quantas familias veem chuva. Mostrar 88% ali diria "concordam que
+    // nao chove", inflado justamente onde nada informa sobre quantidade.
+    let nota;
+    if (d.concordancia_pct == null){
+      nota = '<div class="cc">' + d.familias_com_chuva + " de " + d.n_familias + " veem chuva</div>";
+    } else {
+      const cc = Math.round(d.concordancia_pct);
+      nota = '<div class="cc' + (cc < 50 ? " baixa" : "") + '">' + cc + "% concordam</div>";
+    }
+    return '<div class="bar-row">' +
+      '<div class="d">' + diaSem[dt.getDay()] + " " + dd(dt.getDate()) + "/" + dd(dt.getMonth() + 1) + '</div>' +
+      '<div class="track"><div class="fill" style="width:' + larg + '%"></div></div>' +
+      '<div class="v"><b>' + nf(d.mm_dia) + ' mm</b>' + nota + '</div></div>';
+  }).join("");
+}
+
+// Fracao do que o mes costuma trazer, no proprio municipio. Escala FIXA:
+// 100% = o mes inteiro num dia so. Sem municipio com normal, o cartao some —
+// melhor nao mostrar do que mostrar numero sem base.
+function renderMes(dias){
+  const card = $("#cardMes");
+  const com = (dias || []).filter(function(d){ return d.pct_do_mes != null; });
+  if (!com.length){ card.hidden = true; return; }
+  $("#mes").innerHTML = com.slice(0, 6).map(function (d){
+    const dt = new Date(d.dia + "T12:00:00");
+    const pct = +d.pct_do_mes;
+    const cls = pct >= 50 ? "ex" : pct >= 25 ? "al" : pct >= 10 ? "at" : "";
+    return '<div class="mes-row">' +
+      '<div class="d">' + diaSem[dt.getDay()] + " " + dd(dt.getDate()) + "/" + dd(dt.getMonth() + 1) + '</div>' +
+      '<div class="trilho"><i class="' + cls + '" style="width:' + Math.min(100, pct) + '%"></i></div>' +
+      '<div class="p">' + pct + '% <span class="lbl">do esperado para o m&ecirc;s</span>' +
+        '<span class="mm">' + nf(d.mm_dia) + ' mm</span></div>' +
+    '</div>';
+  }).join("");
+  const soma = com.reduce(function(a, d){ return a + (+d.pct_do_mes); }, 0);
+  const mm = com.reduce(function(a, d){ return a + (+d.mm_dia); }, 0);
+  const mes = ["janeiro","fevereiro","marco","abril","maio","junho","julho",
+               "agosto","setembro","outubro","novembro","dezembro"][new Date(com[0].dia + "T12:00:00").getMonth()];
+  $("#mesTot").innerHTML = "Nos " + com.length + " dias: <b>" + nf(mm) + " mm</b>, ou <b>" +
+    Math.round(soma) + "% do que " + mes + " costuma trazer no m&ecirc;s inteiro</b> aqui (" +
+    nf(com[0].mm_normal_mes) + " mm na normal de 1991&ndash;2020).";
+  card.hidden = false;
+}
+
+// Panorama: carrega uma vez, nao depende do municipio selecionado.
+// Empate e a regra, nao a excecao — a probabilidade vem em 7 faixas, entao
+// varios municipios caem na mesma. Desempata por ocorrencias esperadas: um dia
+// de 34% no Rio pesa mais que o mesmo 34% num municipio de 14 chamados.
+async function carregarPanorama(){
+  const card = $("#cardPanorama");
+  try {
+    const r = await api("/tempo_panorama?select=municipio,regiao_painel,distribuidora," +
+      "dia,prob_dia_ruim,nivel_risco,total_esperado,base_dia" +
+      "&order=prob_dia_ruim.desc,total_esperado.desc&limit=400");
+    if (!r.length){ card.hidden = true; return; }
+
+    const dias = Array.from(new Set(r.map((x) => x.dia))).sort();
+    const hoje = dias[0], amanha = dias[1];
+
+    // Tres recortes. Em cada um o municipio aparece uma vez so; em "proximos"
+    // fica o seu pior dia, por isso a data acompanha o item ali.
+    const faixa = function (filtro, mostrarDia){
+      const visto = new Set(), out = [];
+      for (const x of r){
+        if (!filtro(x) || visto.has(x.municipio)) continue;
+        visto.add(x.municipio); out.push(x);
+        if (out.length === 5) break;
+      }
+      if (!out.length) return '<div class="vazio">sem dados</div>';
+      return '<div class="top5">' + out.map(function (x, i){
+        const dt = new Date(x.dia + "T12:00:00");
+        const sub = mostrarDia
+          ? diaSem[dt.getDay()] + " " + dd(dt.getDate()) + "/" + dd(dt.getMonth() + 1) +
+            " &middot; " + x.total_esperado + " ocorr."
+          : (x.regiao_painel || "") + " &middot; " + x.total_esperado + " ocorr.";
+        return '<div class="l nv-' + x.nivel_risco + '">' +
+          '<div class="pos">' + (i + 1) + '</div>' +
+          '<div class="nm">' + x.municipio + '<span class="sub">' + sub + '</span></div>' +
+          '<div class="pr"><b class="nvtag">' + Math.round(100 * x.prob_dia_ruim) + '%</b>' +
+            '<span>chance de dia ruim</span></div>' +
+        '</div>';
+      }).join("") + '</div>';
+    };
+
+    $("#pan3").innerHTML =
+      '<div><h3>Hoje</h3>'          + faixa((x) => x.dia === hoje,   false) + '</div>' +
+      '<div><h3>Amanh&atilde;</h3>' + faixa((x) => x.dia === amanha, false) + '</div>' +
+      '<div><h3>Pr&oacute;ximos dias</h3>' +
+        faixa((x) => x.dia !== hoje && x.dia !== amanha, true) + '</div>';
+
+    // por distribuidora: quantos municipios dela estao acima do normal HOJE
+    const porD = new Map();
+    for (const x of r){
+      if (x.dia !== hoje) continue;
+      const d = x.distribuidora || "—";
+      if (!porD.has(d)) porD.set(d, { tot: 0, acima: 0 });
+      const o = porD.get(d);
+      o.tot++;
+      // corte em ELEVADO, nao em "nao normal": o limiar de moderado e 10%, que
+      // e a propria climatologia — qualquer dia com chuva cruza, e o resumo
+      // sairia cheio todo dia, sem informar nada.
+      if (x.nivel_risco === "elevado" || x.nivel_risco === "alto") o.acima++;
+    }
+    const linhas = Array.from(porD.entries()).sort((a, b) => b[1].tot - a[1].tot);
+    $("#conces").innerHTML =
+      '<div style="color:var(--ink-muted)">Munic&iacute;pios em risco <b>elevado ou alto</b> ' +
+      'hoje, por distribuidora:</div>' +
+      linhas.map(function (e){
+        const pct = e[1].tot ? (100 * e[1].acima) / e[1].tot : 0;
+        return '<div class="cl"><div class="cn">' + e[0] + '</div>' +
+          '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
+          '<div class="qt">' + e[1].acima + " de " + e[1].tot + '</div></div>';
+      }).join("");
+    card.hidden = false;
+  } catch (e) { card.hidden = true; console.error(e); }
+}
+
+function renderTabela(linhas){
+  const rows = linhas.filter((d) =>
+    d.horizonte_h >= 0 && d.horizonte_h <= 48 && new Date(d.valido_em).getHours() % 3 === 0);
+  $("#tab").innerHTML =
+    "<thead><tr><th>Quando</th><th>Prob. chuva</th><th>Familias</th><th>Mediana</th>" +
+    "<th>Faixa p25-p75</th><th>Max</th><th>Rajada</th></tr></thead><tbody>" +
+    rows.map(function (d){
+      const t = new Date(d.valido_em);
+      const k = Math.round(+d.prob_chuva * FAMILIAS);
+      return "<tr><td>" + diaSem[t.getDay()] + " " + dd(t.getDate()) + "/" + dd(t.getMonth() + 1) +
+        " " + dd(t.getHours()) + "h</td>" +
+        "<td>" + Math.round(d.prob_chuva * 100) + "%</td>" +
+        "<td>" + k + " de " + FAMILIAS + "</td>" +
+        "<td>" + nf(d.precip_mediana) + " mm</td>" +
+        "<td>" + nf(d.precip_p25) + "-" + nf(d.precip_p75) + " mm</td>" +
+        "<td>" + nf(d.precip_max) + " mm</td>" +
+        "<td>" + Math.round(d.rajada_max) + " km/h</td></tr>";
+    }).join("") + "</tbody>";
+}
+
+const ICONE = { perigo_potencial: "▲", perigo: "▲", grande_perigo: "■", observacao: "●" };
+const ROTULO = { perigo_potencial: "Perigo potencial", perigo: "Perigo",
+                 grande_perigo: "Grande perigo", observacao: "Observação" };
+
+function fmtQuando(ini, fim){
+  const a = new Date(ini), b = fim ? new Date(fim) : null;
+  const f = (t) => diaSem[t.getDay()] + " " + dd(t.getDate()) + "/" + dd(t.getMonth() + 1) +
+                   " " + dd(t.getHours()) + "h";
+  return b ? f(a) + " até " + f(b) : "a partir de " + f(a);
+}
+
+async function carregarAlertas(ibge){
+  const card = $("#cardAlertas");
+  try {
+    const av = await api("/tempo_alertas_municipio?municipio_ibge=eq." + ibge +
+      "&select=severidade,evento,inicio,fim,descricao,riscos&order=severidade.desc,inicio.asc");
+    if (!av.length){ card.hidden = true; return; }
+    // ordena por gravidade real, nao alfabetica
+    const peso = { grande_perigo: 3, perigo: 2, perigo_potencial: 1, observacao: 0 };
+    av.sort((x, y) => (peso[y.severidade] || 0) - (peso[x.severidade] || 0));
+    $("#alertas").innerHTML = av.map(function (a){
+      let riscos = "";
+      try {
+        const r = JSON.parse(a.riscos);
+        riscos = Array.isArray(r) ? r.join(" ") : String(r || "");
+      } catch (e) { riscos = a.riscos || ""; }
+      return '<div class="alerta sev-' + a.severidade + '">' +
+        '<div class="ic">' + (ICONE[a.severidade] || "●") + '</div>' +
+        '<div><div class="tt">' + (a.descricao || a.evento) +
+          '<span class="selo">' + (ROTULO[a.severidade] || a.severidade) + '</span></div>' +
+        '<div class="qd">' + fmtQuando(a.inicio, a.fim) + '</div>' +
+        (riscos ? '<div class="rk">' + riscos.slice(0, 320) + '</div>' : '') +
+        '</div></div>';
+    }).join("");
+    card.hidden = false;
+  } catch (e) { card.hidden = true; console.error(e); }
+}
+
+async function carregarRisco(ibge){
+  const card = $("#cardRisco");
+  try {
+    const r = await api("/tempo_risco_energia?municipio_ibge=eq." + ibge +
+      "&select=dia,rajada_kmh,chuva_h_max,cape_jkg,acrescimo_vento," +
+      "acrescimo_raio,acrescimo_conveccao,acrescimo_clima,base_dia," +
+      "total_esperado,prob_dia_ruim,nivel_risco&order=dia.asc");
+    if (!r.length){ card.hidden = true; return; }
+    // a barra mostra a COMPOSICAO do acrescimo: vento, raio e conveccao,
+    // empilhados na ordem em que somam.
+    // A barra e SEMPRE CHEIA e representa o total daquele dia. O que varia e a
+    // COMPOSICAO: quanto do dia e rotina do municipio e quanto e tempo.
+    // A magnitude (83 contra 48 ocorrencias) vive no numero a direita.
+    $("#risco").innerHTML = r.map(function (x){
+      const dt = new Date(x.dia + "T12:00:00");
+      const n = +x.base_dia || 0, v = +x.acrescimo_vento || 0,
+            ra = +x.acrescimo_raio || 0, c = +x.acrescimo_conveccao || 0;
+      // normaliza pela soma das partes, e nao por total_esperado: os dois
+      // diferem por arredondamento no banco, e a barra tem de fechar em 100%.
+      const soma = (n + v + ra + c) || 1;
+      const pc = function(q){ return (100 * q) / soma; };
+      const wn = pc(n), wv = pc(v), wr = pc(ra), wc = pc(c);
+      const h = +x.horas_cobertas;
+      // Rotulo dentro da faixa. So aparece se a faixa for larga o bastante;
+      // senao sairia cortada pelo overflow.
+      // Percentuais SOB a barra. Faixa estreita cortaria o texto se ficasse
+      // dentro, e a quantidade ja aparece na linha da direita — aqui basta a
+      // proporcao, discreta, amarrada a faixa por um ponto da mesma cor.
+      const rot = function(cls, nome, larg){
+        const p = Math.round(larg);
+        return p >= 1 ? '<span><i class="' + cls + '"></i><b>' + nome + '</b> ' + p + '%</span>' : '';
+      };
+      return '<div class="risco nv-' + x.nivel_risco + '">' +
+        '<div class="dia">' + diaSem[dt.getDay()] + " " + dd(dt.getDate()) + "/" + dd(dt.getMonth() + 1) +
+          '<span class="nvtag">' + x.nivel_risco + '</span>' +
+          // dia incompleto se declara em vez de fingir que fechou 24 h
+          (h && h < 24 ? '<span class="hrs">' + h + ' de 24 h</span>' : '') +
+        '</div>' +
+        '<div class="col">' +
+          '<div class="barra">' +
+            '<i class="normal" style="width:' + wn + '%"></i>' +
+            '<i class="vento" style="left:' + wn + '%;width:' + wv + '%"></i>' +
+            '<i class="raio" style="left:' + (wn + wv) + '%;width:' + wr + '%"></i>' +
+            // ultima faixa vai ate o fim: fecha a barra sem sobra de arredondamento
+            '<i class="conv" style="left:' + (wn + wv + wr) + '%;right:0"></i>' +
+          '</div>' +
+          '<div class="pcts">' + rot('normal', 'Normal', wn) + rot('vento', 'Vento', wv) +
+            rot('raio', 'Descarga', wr) + rot('conv', 'Convec&ccedil;&atilde;o', wc) + '</div>' +
+        '</div>' +
+        // o numero que importa primeiro e o total esperado; a composicao vem abaixo
+        '<div class="num">' +
+          '<div class="tot">' + Math.round(100*x.prob_dia_ruim) +
+            '% <span class="esc">de chance de ser um dia ruim</span></div>' +
+          '<div class="brk">' + x.total_esperado + ' ocorr. &middot; normal ' + x.base_dia +
+            ' &middot; vento +' + (+x.acrescimo_vento).toFixed(1) +
+            ' &middot; raio +' + (+x.acrescimo_raio).toFixed(1) +
+            ' &middot; conv. +' + (+x.acrescimo_conveccao || 0).toFixed(1) + '</div>' +
+        '</div>' +
+        '</div>';
+    }).join("");
+    card.hidden = false;
+  } catch (e) { card.hidden = true; console.error(e); }
+}
+
+async function carregarStatus(){
+  try {
+    const st = (await api("/tempo_status?select=*"))[0];
+    if (!st) return;
+    const obs = st.ultima_observacao ? new Date(st.ultima_observacao) : null;
+    const txt = st.pesos_em_uso
+      ? "<b>Os pesos por acerto j&aacute; est&atilde;o ativos.</b> " + st.verificacoes.toLocaleString("pt-BR") +
+        " previs&otilde;es foram confrontadas com observa&ccedil;&atilde;o, e " + st.skill_grupos_ativos +
+        " grupos (regi&atilde;o &times; horizonte) cruzaram as duas travas &mdash; 30 compara&ccedil;&otilde;es " +
+        "<b>e</b> 72 horas distintas. Neles, o modelo que erra menos passou a pesar mais. " +
+        "Nos grupos restantes as fam&iacute;lias continuam pesando igual, at&eacute; a trava fechar."
+      : "<b>Aprendizado em curso.</b> " + st.verificacoes.toLocaleString("pt-BR") +
+        " previs&otilde;es j&aacute; foram confrontadas com observa&ccedil;&atilde;o. Para um modelo ganhar peso, " +
+        "o grupo precisa de 30 compara&ccedil;&otilde;es <b>e</b> 72 horas distintas &mdash; 60 munic&iacute;pios " +
+        "sob a mesma chuva s&atilde;o uma observa&ccedil;&atilde;o repetida 60 vezes, n&atilde;o 60 observa&ccedil;&otilde;es. " +
+        "At&eacute; l&aacute;, todas as fam&iacute;lias pesam igual.";
+    // Verificacao do impacto: o painel declara se ja foi conferido ou nao.
+    // Numero que nunca foi confrontado com a realidade tem de dizer isso.
+    const iv = $("#impactoVerif");
+    if (iv){
+      if (st.impacto_pares_verificados > 0 && st.impacto_skill_pct != null){
+        iv.innerHTML = "<b>Verificado.</b> " + st.impacto_pares_verificados.toLocaleString("pt-BR") +
+          " previs&otilde;es de impacto ja foram confrontadas com as ocorr&ecirc;ncias reais da ANEEL. " +
+          "Ganho sobre chutar a m&eacute;dia hist&oacute;rica: <b>" +
+          (+st.impacto_skill_pct).toFixed(1) + "%</b>.";
+      } else {
+        iv.innerHTML = "<b>Estes n&uacute;meros ainda n&atilde;o foram verificados.</b> " +
+          (st.impacto_dias_congelados || 0) +
+          ((st.impacto_dias_congelados === 1)
+            ? " dia de previs&atilde;o j&aacute; est&aacute; congelado para "
+            : " dias de previs&atilde;o j&aacute; est&atilde;o congelados para ") +
+          "confer&ecirc;ncia, mas a ANEEL publica as ocorr&ecirc;ncias em lote, com semanas de atraso &mdash; " +
+          "ent&atilde;o a primeira aferi&ccedil;&atilde;o s&oacute; sai quando o pr&oacute;ximo lote chegar. " +
+          "At&eacute; l&aacute;, a probabilidade vem da calibra&ccedil;&atilde;o contra 2023&ndash;2026, n&atilde;o de acerto medido.";
+      }
+    }
+    const na = +st.alertas_vigentes || 0;
+    $("#statusSkill").innerHTML = txt +
+      "<br><br><span style='color:var(--ink-muted)'>" +
+      st.estacoes + " esta&ccedil;&otilde;es observando" +
+      (st.municipios_observados ? " em " + st.municipios_observados + " de 92 munic&iacute;pios" : "") +
+      " &middot; " +
+      (na === 1 ? "1 alerta oficial vigente" : na + " alertas oficiais vigentes") +
+      (obs ? " &middot; &uacute;ltima medi&ccedil;&atilde;o " + dd(obs.getHours()) + ":" + dd(obs.getMinutes()) : "") +
+      "</span>";
+  } catch (e) { console.error(e); }
+}
+
+async function carregar(pontoId){
+  ls.set("tempo_mun", pontoId);
+  $("#meta").textContent = "carregando...";
+  try {
+    const linhas = await api("/tempo_previsao?ponto_id=eq." + pontoId +
+      "&select=valido_em,horizonte_h,n_familias,precip_mediana,precip_p25,precip_p75," +
+      "precip_max,dispersao_precip,rajada_max,prob_chuva,prob_chuva_forte," +
+      "temp_mediana,nuvem_pct&order=valido_em.asc");
+    if (!linhas.length){
+      $("#meta").innerHTML = '<span class="erro">Sem previsao para este municipio.</span>';
+      return;
+    }
+    renderHero(linhas); renderTempo(linhas); renderHeatmap(linhas); renderTabela(linhas);
+    api("/tempo_previsao_dia?ponto_id=eq." + pontoId +
+        "&select=dia,mm_dia,n_familias,familias_com_chuva,concordancia_pct," +
+        "mm_normal_mes,pct_do_mes&order=dia.asc")
+      .then(function(d){ renderBarras(d); renderMes(d); })
+      .catch(function(e){ console.error(e); });
+    const mun = MUNS.filter((m) => String(m.ponto_id) === String(pontoId))[0];
+    if (mun) { carregarAlertas(mun.municipio_ibge); carregarRisco(mun.municipio_ibge); }
+    $("#meta").textContent = linhas[0].n_familias + " famílias de modelo · " +
+      linhas.length + " horas previstas";
+  } catch (e) {
+    $("#meta").innerHTML = '<span class="erro">Falha ao carregar: ' + e.message + "</span>";
+  }
+}
+
+/* ---- Combobox de municipio -------------------------------------------
+   Busca sem acento e sem caixa. O <select> anterior obrigava a rolar 92
+   itens; aqui tres letras bastam. O id #mun continua o mesmo, agora um
+   <input>: quem guarda o ponto_id e MUN_ID, nao o value do campo. */
+let MUN_ID = null;
+let COMBO = { lista: [], idx: -1 };
+const semAcento = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const nomeDe = (id) => {
+  const m = MUNS.filter((x) => String(x.ponto_id) === String(id))[0];
+  return m ? m.municipio : "";
+};
+
+function comboFechar(){
+  $("#munLista").hidden = true;
+  $("#mun").setAttribute("aria-expanded", "false");
+  COMBO.idx = -1;
+}
+function comboAbrir(termo){
+  const t = semAcento(termo || "").trim();
+  const lst = MUNS.filter((m) => !t || semAcento(m.municipio).indexOf(t) >= 0)
+                  .sort((a, b) => a.municipio.localeCompare(b.municipio, "pt-BR"));
+  COMBO.lista = lst;
+  const ul = $("#munLista");
+  ul.innerHTML = lst.length
+    ? lst.map((m, i) => '<li role="option" data-i="' + i + '" aria-selected="false">' +
+        "<span>" + m.municipio + '</span><span class="reg">' +
+        (m.regiao_painel || "") + "</span></li>").join("")
+    : '<li class="vazio">nenhum municipio com esse nome</li>';
+  ul.hidden = false;
+  ul.scrollTop = 0;
+  $("#mun").setAttribute("aria-expanded", "true");
+  COMBO.idx = -1;
+}
+function comboMarcar(i){
+  const its = $("#munLista").querySelectorAll("li[data-i]");
+  if (!its.length) return;
+  COMBO.idx = (i + its.length) % its.length;
+  for (let k = 0; k < its.length; k++)
+    its[k].setAttribute("aria-selected", String(k === COMBO.idx));
+  its[COMBO.idx].scrollIntoView({ block: "nearest" });
+}
+function comboEscolher(i){
+  const m = COMBO.lista[i];
+  if (!m) return;
+  MUN_ID = String(m.ponto_id);
+  $("#mun").value = m.municipio;
+  comboFechar();
+  carregar(MUN_ID);
+}
+function comboLigar(){
+  const inp = $("#mun");
+  inp.addEventListener("focus", () => { inp.select(); comboAbrir(""); });
+  inp.addEventListener("input", () => comboAbrir(inp.value));
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown"){
+      e.preventDefault();
+      if ($("#munLista").hidden) comboAbrir(inp.value);
+      comboMarcar(COMBO.idx + 1);
+    } else if (e.key === "ArrowUp"){
+      e.preventDefault(); comboMarcar(COMBO.idx - 1);
+    } else if (e.key === "Enter"){
+      e.preventDefault(); comboEscolher(COMBO.idx >= 0 ? COMBO.idx : 0);
+    } else if (e.key === "Escape"){
+      inp.value = nomeDe(MUN_ID); comboFechar(); inp.blur();
+    }
+  });
+  // mousedown, nao click: o blur do input dispara antes do click e ja teria
+  // fechado a lista, engolindo a escolha.
+  $("#munLista").addEventListener("mousedown", (e) => {
+    const li = e.target.closest("li[data-i]");
+    if (!li) return;
+    e.preventDefault();
+    comboEscolher(+li.getAttribute("data-i"));
+  });
+  inp.addEventListener("blur", () => { inp.value = nomeDe(MUN_ID); comboFechar(); });
+}
+
+/* ---- Monitor de aprendizado ------------------------------------------ */
+const REG_NOME = {
+  metropolitana: "Metropolitana", serrana: "Serrana", medio_paraiba: "M\u00e9dio Para\u00edba",
+  centro_sul: "Centro-Sul", norte: "Norte", noroeste: "Noroeste",
+  baixadas: "Baixadas", costa_verde: "Costa Verde"
+};
+function gate(n, alvo){
+  const p = Math.min(100, Math.round((100 * n) / alvo));
+  return '<div class="gate' + (n >= alvo ? " ok" : "") + '">' +
+         '<span class="trk"><i style="width:' + p + '%"></i></span>' +
+         '<span class="n">' + n.toLocaleString("pt-BR") + " / " + alvo + "</span></div>";
+}
+async function carregarAprendizado(){
+  const tab = $("#aprTab");
+  try {
+    const r = await api("/tempo_aprendizado?select=*&order=horas.desc,amostras.desc");
+    if (!r.length){ tab.innerHTML = ""; return; }
+    const ativos = r.filter((x) => x.ativo).length;
+    tab.innerHTML =
+      "<thead><tr><th>Grupo</th><th>Compara&ccedil;&otilde;es</th>" +
+      "<th>Horas distintas</th><th>Melhor at&eacute; agora</th></tr></thead><tbody>" +
+      r.map(function(x){
+        // Diferenca pequena entre o melhor e o pior nao e empate por acaso:
+        // e periodo sem chuva, em que todo modelo acerta prevendo zero.
+        const spread = (+x.pior_mae) - (+x.melhor_mae);
+        const lider = x.ativo
+          ? "<b>" + x.lider + "</b><span class='sub'>pesa mais neste grupo</span>"
+          : (spread < 0.1
+              ? "<span style='color:var(--ink-muted)'>ainda empatados</span>" +
+                "<span class='sub'>choveu pouco: todos acertam prevendo zero</span>"
+              : x.lider + "<span class='sub'>erro m&eacute;dio " +
+                (+x.melhor_mae).toFixed(2).replace(".", ",") + " mm/h contra " +
+                (+x.pior_mae).toFixed(2).replace(".", ",") +
+                " do pior &mdash; ainda sem valer peso</span>");
+        return "<tr><td>" + (REG_NOME[x.regiao] || x.regiao) +
+               "<span class='sub'>chuva &middot; " + x.faixa_horizonte + " &agrave; frente</span></td>" +
+               "<td>" + gate(x.amostras, x.min_amostras) + "</td>" +
+               "<td>" + gate(x.horas, x.min_horas) + "</td>" +
+               "<td>" + lider + "</td></tr>";
+      }).join("") + "</tbody>";
+    // r vem ordenado por horas desc: o primeiro inativo e o mais proximo de
+    // fechar. Usar r[0] aqui dizia "351 das 72 horas exigidas" depois que os
+    // primeiros grupos passaram — numero certo, frase sem sentido.
+    const falta = r.filter((x) => !x.ativo)[0];
+    $("#aprResumo").innerHTML = "<b>" + ativos + " de " + r.length +
+      "</b> grupos j&aacute; decidem peso" +
+      (falta
+        ? ". Entre os " + (r.length - ativos) + " que faltam, o mais pr&oacute;ximo tem <b>" +
+          falta.horas + "</b> das " + falta.min_horas + " horas exigidas."
+        : " &mdash; todos cruzaram as duas travas.");
+  } catch (e) {
+    tab.innerHTML = "";
+    $("#aprResumo").innerHTML =
+      "<span class='erro'>Falha ao ler o progresso: " + e.message + "</span>";
+  }
+}
+
+/* Ranking das 8 linhagens. Vive ao lado do andamento de proposito: o numero
+   so se le direito sabendo de quantas horas ele saiu. */
+async function carregarDesempenho(){
+  const tab = $("#despTab");
+  try {
+    const r = await api("/tempo_desempenho?select=*&order=mae.asc");
+    if (!r.length){ tab.innerHTML = ""; return; }
+    const pior = Math.max.apply(null, r.map((x) => +x.mae)) || 1;
+    tab.innerHTML =
+      "<thead><tr><th>Fam&iacute;lia</th><th>Erro m&eacute;dio mm/h &mdash; menor &eacute; melhor</th>" +
+      "<th>Vi&eacute;s</th><th>Lidera em</th></tr></thead><tbody>" +
+      r.map(function(x, i){
+        const mae = +x.mae, v = +x.vies;
+        // Barra proporcional ao PIOR do grupo: a leitura util aqui e a
+        // distancia entre as familias, nao o valor absoluto.
+        const larg = Math.max(4, Math.round((100 * mae) / pior));
+        const dir = Math.abs(v) < 0.05 ? "praticamente sem vi&eacute;s"
+                  : v > 0 ? "prev&ecirc; chuva a mais" : "prev&ecirc; chuva a menos";
+        return "<tr><td>" + (i === 0 ? "<b>" + x.linhagem + "</b>" : x.linhagem) +
+               "</td><td><div class='gate'><span class='trk'><i style='width:" + larg +
+               "%'></i></span><span class='n'>" + mae.toFixed(2).replace(".", ",") +
+               "</span></div></td>" +
+               "<td>" + (v > 0 ? "+" : "") + v.toFixed(2).replace(".", ",") +
+               "<span class='sub'>" + dir + "</span></td>" +
+               "<td>" + x.lidera + " de " + x.grupos +
+               "<span class='sub'>grupos</span></td></tr>";
+      }).join("") + "</tbody>";
+  } catch (e) {
+    tab.innerHTML = "";
+    console.error(e);
+  }
+}
+
+/* Diagrama de confiabilidade em forma de tabela. O Brier e a comparacao com a
+   climatologia vem prontos do banco (view tempo_calibracao): a formula tem de
+   viver num lugar so, e esse lugar e o SQL. */
+async function carregarCalibracaoTab(){
+  const tab = $("#calTab");
+  try {
+    if (!CALIB.length) await carregarCalibracao();
+    const r = CALIB;
+    if (!r.length){ tab.innerHTML = ""; $("#calResumo").innerHTML = ""; return; }
+    const pior = Math.max.apply(null, r.map((x) => +x.freq_observada)) || 1;
+    tab.innerHTML =
+      "<thead><tr><th>O painel anuncia</th><th>Choveu de fato</th>" +
+      "<th>Horas medidas</th></tr></thead><tbody>" +
+      r.map(function(x){
+        const p = Math.round(100 * (+x.prob_painel));
+        const o = 100 * (+x.freq_observada);
+        const larg = Math.max(3, Math.round((100 * o) / (100 * pior)));
+        const fam = Math.round((+x.prob_painel) * FAMILIAS);
+        return "<tr><td>" + p + "%<span class='sub'>" + fam + " de " + FAMILIAS +
+               " fam&iacute;lias</span></td>" +
+               "<td><div class='gate'><span class='trk'><i style='width:" + larg +
+               "%'></i></span><span class='n'>" + o.toFixed(1).replace(".", ",") +
+               "%</span></div></td>" +
+               "<td>" + (+x.n_previsoes).toLocaleString("pt-BR") + "</td></tr>";
+      }).join("") + "</tbody>";
+
+    // Skill de Brier: 1 - brier/climatologia. Negativo quer dizer que o numero,
+    // COMO PROBABILIDADE, informa menos que repetir a frequencia media.
+    const z = r[0];
+    const clima = +z.brier_climatologia, atual = +z.brier_atual, cal = +z.brier_calibrado;
+    const sk = (b) => Math.round(100 * (1 - b / clima));
+    $("#calResumo").innerHTML =
+      "<b>" + (+z.n_total).toLocaleString("pt-BR") + " horas conferidas</b>, chuva em " +
+      (100 * (+z.freq_base)).toFixed(1).replace(".", ",") + "% delas. " +
+      "A coluna da direita sobe sem voltar atr&aacute;s &mdash; o painel <b>ordena bem</b> os " +
+      "dias, s&oacute; anuncia n&uacute;mero alto demais.<br>" +
+      "Pontua&ccedil;&atilde;o de Brier contra a climatologia (quanto maior, melhor; " +
+      "0% = n&atilde;o informa nada al&eacute;m da m&eacute;dia): " +
+      "lendo a porcentagem como probabilidade, <b>" + sk(atual) + "%</b>; " +
+      "lendo pela tabela acima, <b>+" + sk(cal) + "%</b>.";
+  } catch (e) {
+    tab.innerHTML = "";
+    $("#calResumo").innerHTML =
+      "<span class='erro'>Falha ao ler a calibra&ccedil;&atilde;o: " + e.message + "</span>";
+  }
+}
+
+async function init(){
+  try {
+    MUNS = await api("/tempo_municipios?select=ponto_id,municipio,municipio_ibge," +
+      "regiao,regiao_painel,distribuidoras&order=municipio.asc");
+  } catch (e) {
+    $("#meta").innerHTML = '<span class="erro">Falha ao carregar municípios: ' + e.message + "</span>";
+    return;
+  }
+  // Lista plana em ordem alfabetica. Agrupar por regiao foi testado e
+  // descartado: exige saber a geografia antes de achar o municipio.
+  // A regiao continua no painel, no subtitulo de cada item do panorama.
+  const salvo = ls.get("tempo_mun");
+  const rio = MUNS.filter((m) => m.municipio === "Rio de Janeiro")[0];
+  MUN_ID = (salvo && MUNS.some((m) => String(m.ponto_id) === salvo))
+    ? salvo : String(rio ? rio.ponto_id : MUNS[0].ponto_id);
+
+  comboLigar();
+  $("#mun").value = nomeDe(MUN_ID);
+  // antes do primeiro render: o cartao principal ja usa a calibracao.
+  await carregarCalibracao();
+  await carregar(MUN_ID);
+  carregarStatus();
+  carregarPanorama();
+}
+
+$("#btnApr").addEventListener("click", function (){
+  const w = $("#aprWrap");
+  w.hidden = !w.hidden;
+  $("#btnApr").setAttribute("aria-expanded", String(!w.hidden));
+  $("#btnApr").textContent = w.hidden ? "Ver o andamento e o desempenho" : "Ocultar";
+  if (!w.hidden && !$("#aprTab").innerHTML){
+    carregarAprendizado(); carregarDesempenho(); carregarCalibracaoTab();
+  }
+});
+
+$("#btnTab").addEventListener("click", function (){
+  const c = $("#cardTab");
+  c.hidden = !c.hidden;
+  $("#btnTab").setAttribute("aria-expanded", String(!c.hidden));
+  $("#btnTab").textContent = c.hidden ? "Ver tabela" : "Ocultar tabela";
+});
+
+
+init();
+</script>
+</body>
+</html>

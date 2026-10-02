@@ -1,0 +1,23 @@
+# Dados baixados, nao versionados: sao reproduziveis pelos scripts numerados
+# de calibracao/ e somam ~328 MB. O que precisa sobreviver e o PROCEDIMENTO,
+# nao o download — ver calibracao/README.md.
+calibracao/*.json
+calibracao/*.ibge
+calibracao/*.parquet
+
+# Artefato acidental do Windows (redirecionamento para NUL virou arquivo)
+nul
+
+# Python descartavel
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Lixo de editor e de sistema
+.DS_Store
+Thumbs.db
+*.swp
+
+# Permissoes locais desta maquina, nao do projeto
+.claude/settings.local.json
