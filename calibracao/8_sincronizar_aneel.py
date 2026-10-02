@@ -71,6 +71,22 @@ class ArquivoRemoto(io.RawIOBase):
         return dados
 
 
+def enviar(linhas):
+    """Chama a funcao do banco. Com lista vazia, serve de BATIMENTO.
+
+    O robo roda todo dia e 29 dias por mes nao tem nada a ingerir. Sem esta
+    chamada ele nao deixaria rastro nenhum no sistema, e morrer calado seria
+    indetectavel — lembrando que o GitHub desativa workflow agendado apos 60
+    dias sem atividade no repositorio. Alguns bytes por dia sao a diferenca
+    entre "esta esperando" e "parou".
+    """
+    corpo = json.dumps({"p_segredo": SEGREDO, "p_rows": linhas}).encode()
+    r = buscar(SUPA + "/rest/v1/rpc/tempo_ingerir_observado", dados=corpo,
+               apikey=ANON, Authorization="Bearer " + ANON,
+               **{"Content-Type": "application/json"})
+    return r.read().decode()[:300]
+
+
 def estado_do_banco():
     r = buscar(SUPA + "/rest/v1/tempo_aneel_estado?select=*",
                apikey=ANON, Authorization="Bearer " + ANON)
@@ -130,8 +146,9 @@ def main():
           % (ano_alvo, alvo["last_modified"][:10], mes, f.baixado / 1024))
 
     if mes is None or mes < mes_alvo:
-        print("ainda nao alcanca o mes %d. Nada a fazer — custou %.0f KB."
+        print("ainda nao alcanca o mes %d. Nada a ingerir — custou %.0f KB."
               % (mes_alvo, f.baixado / 1024))
+        print("batimento:", enviar([]))
         return
 
     print("alcancou. Baixando as 2 colunas...")
@@ -153,17 +170,15 @@ def main():
           % (f"{len(g):,}", g.dia.min(), g.dia.max(), f.baixado / 1e6, time.time() - t0))
 
     if not len(g):
-        print("nada no periodo com previsao congelada."); return
+        print("nada no periodo com previsao congelada.")
+        print("batimento:", enviar([]))
+        return
 
     linhas = [{"ibge": int(r.ibge), "dia": str(r.dia), "chamados": int(r.chamados)}
               for r in g.itertuples()]
     LOTE = 5000          # um ano inteiro passa de 30 mil linhas; nao vai num JSON so
     for i in range(0, len(linhas), LOTE):
-        corpo = json.dumps({"p_segredo": SEGREDO, "p_rows": linhas[i:i + LOTE]}).encode()
-        r = buscar(SUPA + "/rest/v1/rpc/tempo_ingerir_observado", dados=corpo,
-                   apikey=ANON, Authorization="Bearer " + ANON,
-                   **{"Content-Type": "application/json"})
-        print("lote %d: %s" % (i // LOTE + 1, r.read().decode()[:300]))
+        print("lote %d: %s" % (i // LOTE + 1, enviar(linhas[i:i + LOTE])))
 
 
 if __name__ == "__main__":
