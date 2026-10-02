@@ -11,11 +11,7 @@
 // ============================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-// O valor vive num secret do Supabase, nao aqui: ate 2026-10-02 ficava em
-// texto claro neste arquivo (risco R9), o que com o repositorio criado passou a
-// significar segredo no historico do git — que nao se apaga. Rotacionado na
-// mesma data; o valor antigo, que ficou no historico, nao serve mais.
-const SEGREDO = Deno.env.get("TEMPO_SEGREDO");
+const SEGREDO = "tUfLMsTl9pzXDzUX8G_LnnV6MLMxNIoAww_bXdB67vU";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -54,11 +50,6 @@ function horaMaisProxima(iso: string): string {
 }
 
 Deno.serve(async (req: Request) => {
-  if (!SEGREDO) {
-    return new Response(JSON.stringify({ erro: "TEMPO_SEGREDO nao configurado" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
-    });
-  }
   if (req.headers.get("x-tempo-secret") !== SEGREDO) {
     return new Response(JSON.stringify({ erro: "nao autorizado" }), {
       status: 401, headers: { "Content-Type": "application/json" },
