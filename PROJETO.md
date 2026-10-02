@@ -1,0 +1,1648 @@
+# TEMPO-RJ — Sistema de Previsão Consolidada e Risco de Impacto
+
+> Documento de referência conceitual e arquitetural.
+> Criado em 2026-09-10. Última atualização: **2026-09-28** — pesos por skill
+> em vigor (§9.7), painel com busca, cartão de condição e monitor (§12.2),
+> riscos R1/R4/R5/R7 encerrados e R13 aberto (§13), calibração medida e
+> mostrada (§9.8).
+> **Este documento precede o código.** Toda decisão de implementação deve ser
+> rastreável até aqui — e, quando contrariá-lo, o documento é atualizado antes.
+
+---
+
+## 1. O que é
+
+Sistema que agrega o maior número possível de fontes de previsão meteorológica,
+cruza com alertas de órgãos governamentais brasileiros, e produz uma previsão
+consolidada com **probabilidade calibrada** — estendendo-a até a previsão de
+**impacto**, com foco em interrupção de energia elétrica.
+
+Não é um agregador de previsões. É um sistema de **fusão, calibração e
+verificação** que aprende com os próprios erros.
+
+---
+
+## 2. Premissas invioláveis
+
+Definidas pelo usuário. Qualquer proposta que as viole deve ser rejeitada ou
+renegociada explicitamente.
+
+| # | Premissa | Consequência arquitetural |
+|---|---|---|
+| **P1** | **Custo R$ 0,00** — total e permanente | Só free tiers. O orçamento de armazenamento vira o constraint mestre. |
+| **P2** | Uso pessoal — o autor e, talvez, 1–2 amigos | Sem multi-tenancy, sem escala. Mas RLS é obrigatória mesmo assim. |
+| **P3** | **HTML standalone** consumindo dados do **Supabase** | O front não tem lógica de coleta. É consumidor puro. |
+| **P4** | **Nada armazenado em máquina local** — roda em qualquer máquina | Não pode haver processo local, cron local ou banco local. |
+
+### Consequência combinada de P3 + P4
+
+Um HTML só executa quando alguém o abre. Logo, ele **não pode ser o coletor** —
+haveria buracos no histórico e a camada de verificação seria impossível.
+
+> **O Supabase não é o banco do projeto. O Supabase *é* o projeto.**
+
+Ele fornece, no plano gratuito, o backend completo: `pg_cron` agenda,
+Edge Functions coletam e fazem proxy, Postgres normaliza e funde, PostgREST +
+RLS servem ao HTML.
+
+---
+
+## 3. Escopo
+
+| Dimensão | Definição |
+|---|---|
+| **Geográfico** | Estado do Rio de Janeiro (92 municípios) — por ora |
+| **Unidade de cálculo** | ~120 pontos representativos (ver §6) |
+| **Unidade de comunicação** | Município |
+| **Horizonte** | Nowcasting (0–6 h) até 5 dias |
+| **Usuários** | 1 a 3 pessoas |
+
+---
+
+## 4. Modelo conceitual — as três camadas
+
+O erro clássico do domínio é confundir estas camadas. Elas são distintas e
+empilhadas:
+
+| Camada | Pergunta | Natureza |
+|---|---|---|
+| **1 — Física** | O que a atmosfera vai fazer? | Modelos numéricos, ensemble |
+| **2 — Perigo (*hazard*)** | O que isso causa no terreno? | Solo, saturação, topografia, bacia |
+| **3 — Impacto** | O que quebra? | Infraestrutura, exposição, vulnerabilidade |
+
+**80 mm de chuva não é um alerta.** 80 mm sobre solo já saturado, em encosta
+ocupada, com rede aérea de distribuição e vento de 60 km/h — isso é um alerta.
+A mesma chuva em outro lugar é irrelevante.
+
+O diferencial do projeto vive na camada 3. Mas ela só é honesta se 1 e 2 forem.
+
+---
+
+## 5. Princípios de design
+
+Os cinco princípios abaixo são o núcleo intelectual do projeto.
+
+### 5.1 O voto é por linhagem, não por fonte
+
+Doze apps de previsão não são doze opiniões. Cinco rodam **GFS**, três rodam
+**ECMWF/IFS**, dois rodam **ICON**, dois têm modelo próprio — são **quatro**
+opiniões. "Maioria das fontes" mede popularidade comercial, não acerto.
+
+**Regra:** toda previsão ingerida carrega sua **linhagem de modelo**. A fusão
+agrupa por linhagem antes de ponderar. Fontes derivadas nunca votam duas vezes.
+
+### 5.2 O peso vem de skill medido, não de opinião
+
+Nenhum modelo é melhor em tudo. ECMWF tende a dominar em médio prazo global;
+modelos de mesoescala regionais tendem a ganhar em convecção local de curto
+prazo. Isso não se decide — **se mede**, por região, variável e horizonte.
+
+### 5.3 Órgãos oficiais não são votantes no ensemble
+
+Eles têm naturezas epistemologicamente distintas entre si:
+
+| Órgão | Natureza | Papel no sistema |
+|---|---|---|
+| **INMET** | Aviso meteorológico (previsão + limiar) | Previsão com autoridade |
+| **CEMADEN** | Monitoramento hidrológico/geológico | **Observação** — estado presente |
+| **Alerta Rio** | Radar + pluviômetros (capital) | **Observação** de alta densidade |
+| **Defesa Civil** | Decisão e ação humana | **Autoridade normativa** |
+| **ANEEL / distribuidoras** | Interrupção ocorrida | **Consequência** |
+
+> Observação **corrige** a previsão.
+> Alerta oficial **sobrepõe** a previsão — não vota nela.
+> Consequência **treina** o modelo de impacto.
+
+### 5.4 Probabilidade sem calibração é mentira educada
+
+Se o sistema diz "70%", precisa ter chovido em ~70% das vezes em que ele disse
+70%. Isso exige guardar toda previsão emitida e verificá-la depois
+(Brier score, curva de confiabilidade).
+
+**Consequência de modelagem:** o banco é *append-only* e temporal desde o
+primeiro dia. Toda previsão nasce com `emitida_em`, `valida_para`, `fonte`,
+`linhagem`. **Nunca sobrescrever.**
+
+### 5.5 Discordância é informação, não ruído
+
+Quando as fontes divergem, a resposta certa **não** é tirar a média e exibir um
+número confiante. A dispersão do ensemble *é* a medida de incerteza — muitas
+vezes o dado mais útil que o sistema tem.
+
+O sistema deve poder dizer: *"alta confiança de chuva, baixa confiança de
+volume"* — ou simplesmente *"os modelos não concordam"*.
+
+**Regra de apresentação:** a probabilidade nunca aparece sozinha. Sempre
+acompanhada de (a) dispersão e (b) número de linhagens independentes que
+concordam.
+
+---
+
+### 5.6 Uma dimensão por canal visual
+
+Aprendido na marra em 2026-09-11. A barra de risco elétrico pintava o segmento
+de vento pela **gravidade do dia** e o de raio pela **causa** — duas dimensões
+disputando o mesmo canal de cor. Em dia normal o vento ficava azul; o raio
+também era azul; e o leitor via uma barra azul sem saber qual das duas coisas
+estava olhando. Nenhuma legenda conserta isso: ela teria que dizer "azul é
+vento, exceto quando é raio".
+
+A regra: **cor codifica causa, palavra codifica gravidade, comprimento codifica
+magnitude.** Um canal, um significado. E quando o canal escolhido é cor, vale
+duplicar com algo que não dependa dela — a hachura no segmento de raio existe
+porque azul e violeta são justamente o par que colapsa em daltonismo
+vermelho-verde.
+
+Corolário que vale para todo gráfico do painel: **escala relativa precisa ser
+declarada.** As barras de risco são proporcionais ao pior dia da janela de
+cinco, não a um teto fixo. Sem dizer isso, barra cheia é lida como "risco
+máximo" quando significa apenas "o maior destes cinco".
+
+### 5.7 Todo número visível diz de que ele é
+
+Aprendido por correção do usuário **três vezes seguidas** em 2026-09-11, o que
+o torna princípio e não descuido. Um número grande e sozinho no cartão — `34%`,
+`24%`, `35%` — é ilegível mesmo quando o título do cartão explica: o olho pousa
+no número, não no cabeçalho, e o cabeçalho fica fora do campo de leitura quando
+o cartão é largo.
+
+A regra: **a unidade ou a definição viaja junto do número, no ponto em que ele
+aparece**, ainda que em fonte menor e ainda que repita o título. "24% de chance
+de ser um dia ruim" no próprio cartão, não "24%" sob um cabeçalho que diz risco.
+
+### 5.8 Ausência precisa ter desenho próprio
+
+Dois erros do mesmo tipo, encontrados em 2026-09-15.
+
+**(a) O zero que mentia.** A barra do cartão principal conta quantas das 8
+famílias preveem chuva, mas a legenda dizia "concordam". Nos valores altos as
+duas coisas coincidem por acaso; na ponta de baixo a frase inverte — em dia de
+sol firme as oito famílias estão em pleno acordo e o painel anunciava
+**"0 de 8 concordam"**, isto é, caos total na previsão mais confiável que
+existe. Corrigido: a linha declara os dois lados ("3 de 8 preveem chuva · 5
+não") e a palavra *concordam* fica reservada ao voto unânime.
+
+**(b) O preto que parecia defeito.** O mapa de chuva hora a hora deixa o dia bom
+inteiramente escuro. Escuro é indistinguível de "a coleta falhou" — observação
+do usuário, e ele tinha razão. A solução não foi pintar o mapa de chuva de outro
+jeito: foi **acrescentar um cartão que responde a outra pergunta** (como o céu
+deve estar), no qual toda hora tem desenho. Ver §12.2.
+
+O princípio geral: **quando o dado diz "nada acontece", isso tem de ter forma
+visível própria**, distinta de erro e distinta de vazio. E quando não se sabe —
+como nas horas sem cobertura de nuvem coletada — a célula fica vazia com
+explicação, nunca preenchida com um chute plausível.
+
+---
+
+## 6. O constraint mestre: 500 MB
+
+O plano gratuito do Supabase oferece ~500 MB de banco. Isso define a arquitetura
+mais do que qualquer preferência técnica.
+
+### Por que o grid regular foi descartado
+
+Grid de 0,1° sobre o RJ (~600 pontos em terra), previsão horária a 5 dias
+(120 h), 4 linhagens, 4 rodadas/dia:
+
+```
+600 × 120 × 4          = 288.000 registros por rodada
+× 4 rodadas/dia        = 1,15 milhão de registros/dia
+× ~100 bytes           ≈ 115 MB/dia   →  banco cheio em 4 dias
+```
+
+### O desenho adotado
+
+| Decisão | Valor |
+|---|---|
+| Pontos de cálculo | **~120** — 92 sedes municipais + pontos extras em municípios grandes e de risco (Petrópolis, Teresópolis, Nova Friburgo, Angra, Campos, capital) |
+| Unidade de linha | **1 linha JSONB por (ponto, rodada, linhagem)** — a série de 120 h vira um blob comprimido |
+| Volume resultante | `120 × 4 × 4 ≈ 1.900 linhas/dia` |
+
+### Política de esquecimento
+
+Decisão de projeto de primeira classe, não detalhe operacional:
+
+| Dado | Retenção | Justificativa |
+|---|---|---|
+| Previsão bruta detalhada | 7–10 dias | Só serve até ser verificada |
+| Observação (chuva, vento, raios) | 90+ dias | É barata e é a verdade |
+| Alertas oficiais | Permanente | Baixo volume; histórico do que "quase aconteceu" |
+| **Score de acerto por modelo/região/variável** | **Permanente** | É o destilado — o que o sistema aprendeu |
+
+> **O sistema não precisa lembrar das previsões. Precisa lembrar do que aprendeu
+> com elas.** Os 500 MB forçam essa disciplina — e ela melhora o projeto.
+
+---
+
+## 7. Arquitetura
+
+```
+┌─ SUPABASE (roda sozinho, 24/7, R$ 0) ──────────────────────┐
+│                                                             │
+│  pg_cron ──► Edge Function ──► [fontes externas]            │
+│                    │           (também atua como proxy      │
+│                    │            para fontes sem CORS)       │
+│                    ▼                                        │
+│         [1] normalização + LINHAGEM                         │
+│                    ▼                                        │
+│         [2] fusão ponderada por skill (SQL / views)         │
+│                    ▼                                        │
+│         [3] camada hazard  (+ CEMADEN, solo, acumulado)     │
+│                    ▼                                        │
+│         [4] camada impacto (+ histórico ANEEL, rede)        │
+│                    ▼                                        │
+│         [5] verificação ──┐                                 │
+│                    │      │ realimenta os pesos de [2] e [4]│
+│                    │      └─────────────────────────────────│
+│                    ▼                                        │
+│              PostgREST + RLS                                │
+└────────────────────│────────────────────────────────────────┘
+                     ▼
+        HTML standalone hospedado (somente leitura)
+                     │
+                     └──► botão "faltou luz aqui" (escrita restrita)
+```
+
+O bloco **[5] verificação** é o que separa este projeto de um *mashup* de APIs.
+
+---
+
+## 8. Fontes de dados
+
+### 8.1 Camada 1 — modelos numéricos (espinha dorsal)
+
+**Open-Meteo** resolve o problema da linhagem de forma quase perfeita: gratuito
+para uso não comercial, sem chave, com CORS, e **entrega cada modelo
+separadamente** — GFS, ICON, ECMWF/IFS, GEM, ARPEGE, JMA, MET Norway. Não é
+preciso adivinhar a procedência: pede-se por nome.
+
+- **Ensemble API** → entrega os membros (GEFS, ICON-EPS). *A dispersão vem de graça.*
+- **API histórica (ERA5)** → meteorologia horária retroativa. **Fundamental** — ver §9.
+
+### 8.2 Camada 2 — observação e alerta
+
+| Fonte | O que traz | Cobertura |
+|---|---|---|
+| **Alerta Rio** | Radar meteorológico + rede densa de pluviômetros | Capital — ativo excepcional |
+| **CEMADEN** | Pluviômetros automáticos + risco geológico/hidrológico | Boa densidade na Região Serrana |
+| **INMET** | Estações automáticas + avisos por município | Estadual |
+| **INEA** | Monitoramento hidrológico estadual | Estadual |
+| **REDEMET** | METAR dos aeroportos (SBGL, SBRJ, SBJR, Campos, Resende) | Pontual, qualidade aeronáutica |
+| **Defesa Civil** (estadual/municipal) | Decisão e ação | Estadual |
+| **CPTEC/INPE** | Satélite GOES, descargas atmosféricas | Nacional |
+
+> **Nota técnica:** várias fontes brasileiras não enviam cabeçalho CORS. O HTML
+> não pode chamá-las direto — precisam passar pela Edge Function. Isso reforça
+> a arquitetura: a Edge Function é agendador **e** proxy.
+
+#### ✅ Testado em 2026-09-10 — o que realmente funciona
+
+> **A descoberta que destravou tudo: User-Agent.** Sem cabeçalho de navegador,
+> o Alerta Rio devolve `Request Rejected` (WAF) e o INMET **derruba a conexão**
+> (`Recv failure: Connection was reset`). Com um UA de Chrome, ambos respondem
+> 200. Isso não é detalhe cosmético — é pré-requisito, e está comentado no
+> código para não se perder.
+
+| Fonte | Endpoint | Resultado |
+|---|---|---|
+| **Alerta Rio** | `websempre.rio.rj.gov.br/json/chuvas` | ✅ **Em uso.** 33 pluviômetros, janelas m05/m15/h01/h02/h03/h04/h24/h96/mês, com lat/lon e `read_at`. |
+| **INMET — avisos** | `apiprevmet3.inmet.gov.br/avisos/ativos` | ✅ **Em uso.** ~618 KB nacional, chaves `hoje`/`futuro`, `geocodes` IBGE, severidade e **texto de `riscos`** que cita corte de energia. |
+| **INMET — estações** | `apitempo.inmet.gov.br/estacoes/T` | ⚠️ Lista funciona (26 estações operantes no RJ, com coordenadas)… |
+| **INMET — dados de estação** | `apitempo.inmet.gov.br/estacao/{ini}/{fim}/{cod}` | ❌ **204 sem conteúdo** em toda data testada (2024 a 2026). A rota existe (204, não 404) mas as vizinhas dão 404 e `/token/estacao/.../{token}` responde 200 — **o INMET fechou os dados atrás de token**. Não utilizável sem solicitar credencial. |
+| **CEMADEN** | `resources.cemaden.gov.br/graficos/interativo/getJson2.php?uf=RJ` | ✅ **Em uso desde 2026-09-11.** 118 KB, JSON plano, **395 estações no RJ / ~204 vivas / 64 municípios**. Campos `codibge`, `datahoraUltimovalor` e acumulados `acc1hr`…`acc96hr`. Também exige User-Agent de navegador. |
+
+**Cobertura da observação (2026-09-11).** Com o CEMADEN, a observação deixou de
+ser só a capital: **64 dos 92 municípios**, nas 8 regiões do estado. A Serrana é a
+melhor coberta — Nova Friburgo 28 estações, Petrópolis 25, Teresópolis 22 —, o que
+faz sentido, já que o CEMADEN nasceu do desastre de 2011 ali.
+
+Faltam 28 municípios, concentrados no **Noroeste** (8) e nas **Baixadas** (7);
+também Macaé, Cabo Frio e Carmo. Esses seguem com pesos neutros. Vários deles têm
+estação do INMET — é o que fecharia o buraco, se o token sair.
+
+#### Duas ambiguidades do CEMADEN resolvidas no dado, não no chute
+
+1. **`"-"` é como o CEMADEN escreve zero.** Zero nunca aparece como número em 395
+   registros × 5 janelas; e tratar `"-"` como 0 deixa **203/203** estações com série
+   monotônica (`1h ≤ 3h ≤ 6h ≤ 12h ≤ 24h`). Se fosse dado ausente, haveria violações.
+   Vale só para estação viva — estação morta é descartada, não zerada.
+2. **`datahoraUltimovalor` está em UTC.** O atraso das leituras em relação ao download
+   agrupa em 0–50 min (p05 = −0,6). Se fosse horário de Brasília, agruparia em +180 min.
+   Há deriva de relógio nos dois sentidos, daí a janela de aceitação de ±90 min.
+
+#### Formato: vetor de 24 horas, não uma linha por leitura
+
+`tempo.observacao_dia` guarda **uma linha por (município, dia)** com vetores de 24
+posições (média, mediana, máxima entre estações e nº de estações por hora). Em formato
+longo, os 120 dias de retenção custariam **~125 MB**; assim custam **~3 MB**. É o mesmo
+princípio que já rege `tempo.previsao`.
+
+Guardar média *e* mediana é deliberado: a média estima melhor a chuva areal quando há
+20 estações, a mediana é mais robusta quando há 2. Observação não se recoleta depois.
+
+#### Coletado pelo Postgres, sem Edge Function
+
+É um `GET` só, de JSON plano — `pg_net` dá conta. `tempo.cemaden_disparar()` às :08,
+`tempo.cemaden_coletar()` às :12, antes da verificação das :25. Efeito colateral útil:
+não dependeu do `deploy_edge_function`, que estava quebrado na sessão.
+
+### 8.3 Camada 3 — impacto elétrico (ANEEL)
+
+São **dois sistemas distintos**, de naturezas opostas.
+
+#### (a) ANEEL RADAR — tempo real
+
+Sistema nacional que mostra em tempo real **quantos clientes estão sem energia**
+por região. Anunciado em ago/2025; adesão obrigatória das distribuidoras até
+jan/2026; lançamento público previsto para o 1º tri/2026.
+
+Indicadores expostos: nº de clientes sem energia por região, localização,
+frequência, duração, **previsão de restabelecimento** (obrigatória em até 15 min
+após a interrupção) e desempenho da concessionária no tempo.
+
+#### VERIFICADO EM 2026-09-10 — o painel EXISTE, mas não é ingerível
+
+⚠️ **Correção de um erro meu.** Na primeira verificação concluí que o painel
+"não estava publicado". **Estava errado.** Eu havia percorrido apenas a *lista*
+de workspaces do `portalrelatorios.aneel.gov.br` e parei ali — sem abrir o
+conteúdo de cada um. O painel está dentro do workspace **"Hub da Distribuição
+SMA"** (17 conteúdos), que eu vi listado e não explorei.
+
+**URL real** (indicada pelo usuário):
+`portalrelatorios.aneel.gov.br/hubDistribuicao/monitoramentoInterrupcoesFornecimentoBrasil`
+— *"Monitoramento das Interrupções do Fornecimento no Brasil — acompanhe as
+interrupções do fornecimento de energia em tempo real."*
+
+**Mas a conclusão prática se mantém:** o painel é um `iframe` de
+`app.powerbi.com/reportEmbed` (`reportId=ddf8856b-5fb9-43d8-b2e6-506e1a9fd9d1`).
+Não há API JSON pública. Consumi-lo automaticamente exigiria bater no endpoint
+interno de query do Power BI — instável, sem contrato e fora dos termos de uso.
+
+**Decisão:** o painel entra como **referência de consulta manual**, linkado no
+rodapé do front. Não é fonte de ingestão. Se um dia a ANEEL publicar API aberta
+(o RADAR prometia isso), reavaliar.
+
+**Lição de método registrada:** verificação por listagem de catálogo não é
+verificação. Abrir o índice não é abrir o conteúdo.
+
+#### (b) Dados abertos históricos — o achado mais valioso
+
+Dataset [*Interrupções de Energia Elétrica nas Redes de Distribuição*](https://dadosabertos.aneel.gov.br/dataset/interrupcoes-de-energia-eletrica-nas-redes-de-distribuicao):
+
+| Característica | Valor |
+|---|---|
+| Cobertura temporal | **2017 – 2026** |
+| Granularidade | **Por evento**, timestamp em hora:minuto:segundo |
+| Granularidade geográfica | Conjunto de unidades consumidoras (mais fino que município) |
+| Atualização | **Mensal** |
+| Formato | ZIP e Parquet, **~200–270 MB por ano** |
+| Licença | ODbL (aberta) |
+| ⚠️ API | **Não há datastore API.** Verificado via CKAN: nenhum recurso tem `datastore_active`. Só download integral. |
+| ⚠️ Lacuna | Não cobre permissionárias/cooperativas (irrelevante para o RJ) |
+
+**Detalhe de ouro — "Expurgos":** são as interrupções excluídas do cálculo de
+DEC/FEC, tipicamente **eventos climáticos extremos**. A própria distribuidora já
+rotulou, para nós, quais eventos foram catástrofes meteorológicas.
+**É um dataset rotulado, de graça.**
+
+#### (c) Três datasets adicionais descobertos em 2026-09-10
+
+A descrição do workspace de Fiscalização revelou que existe uma família de dados
+de **"ocorrências emergenciais"** — distinta de "interrupções" e mais próxima do
+dano causado por tempestade. Consulta ao CKAN da ANEEL:
+
+| Dataset | Cobertura | Tamanho | Avaliação |
+|---|---|---|---|
+| **Atendimento às Ocorrências Emergenciais** | **2009 →** (mensal, por conjunto) | **Parquet 18,1 MB** | ⭐ **O melhor custo-benefício.** 17 anos, cabe inteiro no orçamento. Tempos de preparo/deslocamento/execução e % de interrupções. |
+| **Ocorrências Emergenciais nas Redes de Distribuição** | 2017–2026 (por ocorrência) | ~176–195 MB/ano | Granularidade máxima, mesmo problema de tamanho das interrupções. Requer destilação. |
+| **Evento Situação de Emergência** | 2026 → | **CSV 70 KB + 11 KB** | ⭐ **Joia.** Decretos de calamidade pública e situação de emergência **por município**, com tipo de evento e vigência. Rótulo oficial de catástrofe, minúsculo. |
+
+**Impacto no projeto:** o dataset de *Atendimento* (18 MB, desde 2009) e o de
+*Situação de Emergência* (81 KB) são pequenos o bastante para entrar **direto**,
+sem passar pela bancada de destilação. Isso antecipa a camada de impacto: dá
+para começar a treinar antes mesmo de processar os Parquet gigantes.
+
+**"Dia crítico"** é a definição *oficial* da ANEEL para um dia em que as
+ocorrências emergenciais excedem o limiar estatístico — ou seja, a própria
+agência já marcou quais dias foram eventos climáticos de massa. É o rótulo que
+a camada 3 precisa, pronto e auditado.
+
+---
+
+## 9. A descoberta que mudou a arquitetura
+
+Na concepção inicial, concluímos que a camada de impacto elétrico "nasceria
+cega" — sem forma de saber se acertou. **Isso foi superado.**
+
+```
+8 anos de interrupções do RJ (ANEEL, por evento, por conjunto)
+                        ×
+8 anos de meteorologia horária (Open-Meteo / ERA5, por ponto)
+                        ↓
+              modelo empírico de impacto
+```
+
+A camada 3 deixa de ser heurística e vira **regressão sobre dado real**.
+O botão "faltou luz" deixa de ser a única verdade e passa a ser **validação
+contínua de um modelo já treinado**.
+
+### Insights extraíveis do cruzamento
+
+1. **Baseline por conjunto elétrico** — quantas interrupções são normais por mês. Sem isso, "muitas quedas" não significa nada.
+2. **Sazonalidade** — assinatura verão/inverno do RJ (convecção × frentes frias).
+3. **Limiares empíricos** — *"rajada acima de X km/h em Petrópolis multiplica interrupções por Y"*. É literalmente a função que a camada 3 precisa.
+4. **Vulnerabilidade relativa por município** — quais trechos da rede quebram mais fácil sob a mesma tempestade. Não existe publicado de forma digerida.
+5. **Tempo típico de restabelecimento** por causa e intensidade → prever *duração*, não só ocorrência.
+6. **Curva de resposta** — a defasagem entre o pico de chuva/vento e a queda de energia. Ela existe e é previsível.
+7. **Catálogo de eventos extremos** via expurgos — os piores dias do RJ em 8 anos, prontos para estudo.
+
+## 9.0 ⚠️ REVISÃO CRÍTICA DA CAMADA 3 (2026-09-11)
+
+> O usuário questionou a magnitude de "ocorrências/dia". A revisão mostrou que
+> a v1 estava **metodologicamente errada**. Este bloco fica como registro do
+> erro; §9.1 descreve o modelo corrigido.
+
+### O que é uma "ocorrência" — verificado no dado
+
+`DscCanalAtendimento` nas 1.018.800 ocorrências do RJ em 2025:
+
+| Canal | Registros | % |
+|---|---|---|
+| RECLAMAÇÃO / Reclamação do Consumidor / Reclamação | 1.004.626 | **98,6 %** |
+| Sistema de Supervisão | 13.572 | 1,3 % |
+| Informação / Alarme | 602 | 0,1 % |
+
+**Ocorrência é um chamado de cliente**, não um evento de rede e não um cliente
+sem energia. Um desligamento gera vários chamados; um chamado pode representar
+muitos clientes. `DscNumInterrupcao` confirma: até 4 ocorrências apontam para a
+mesma interrupção, e **51 % nem têm interrupção associada** (`S/I`).
+
+### Os três erros da v1
+
+1. **Aplicou multiplicador climático ao baseline TOTAL.** Só **7,2 %** dos
+   chamados têm causa meteorológica (árvore 45.562, animais 8.761, descarga
+   7.869, vento 5.570, inundação, erosão…). Os outros 93 % são falha de
+   equipamento — que o tempo não prediz.
+2. **Rotulou o total como "acima do normal".** O número exibido era o total
+   esperado, não o excedente. Erro de rótulo puro e simples.
+3. **Não considerou dia da semana nem distribuidora**, ambos com efeito maior
+   que várias faixas de vento.
+
+### Backtest que reprovou a v1
+
+Nos 20 piores dias do estado a v1 previa ~780 onde ocorreram **1.300–1.616**.
+Esses dias tinham rajada de 32–49 km/h — não eram temporais.
+Em 22/09/2025 houve 1.616 chamados no Rio e **apenas 49** de causa climática.
+
+O maior pico de 2025 em Petrópolis (375 chamados, 06/05) foi **100 % da Ampla**,
+concentrado entre 11 h e 15 h, com 248 classificados como *falha de material*
+e apenas 7 como *árvore*. Rajada naquele dia: **20 km/h**.
+
+### Efeitos que superam o clima
+
+| Efeito | Magnitude |
+|---|---|
+| **Dia da semana** | seg/ter ~3.020 chamados → dom 1.876 (**−38 %**) |
+| **Distribuidora** | Ampla tem 43,6 % do total mas **71 %** dos chamados em dias de pico |
+| Rajada 40–50 km/h (v1) | +27 % |
+
+---
+
+## 9.1 ✅ MODELO v2 — o alvo correto
+
+O que §9 prometia como possibilidade agora está medido e em produção.
+
+**Insumos processados** (em ambiente efêmero, destruído ao final — 629 MB
+baixados, 447 KB preservados):
+
+| Fonte | Volume |
+|---|---|
+| *Ocorrências Emergenciais nas Redes de Distribuição 2025* (ANEEL) | 398 MB, **11.584.917 ocorrências** no país |
+| Filtrado ao RJ via `CodIBGE` | **1.018.800 ocorrências**, 92 municípios |
+| *Atendimento às Ocorrências Emergenciais* (ANEEL) | 18 MB, 6,78 M linhas, **2000–2026** |
+| ERA5 diário 2025 (Open-Meteo archive) | 33.580 dias-município |
+
+O dataset por ocorrência traz **`CodIBGE`** — foi isso que resolveu o problema
+de geografia que o indicador mensal (agregado por *conjunto elétrico*) não
+resolvia.
+
+## 9.2 ✅ MODELO v3 — ADITIVO POR CAUSA (2026-09-11)
+
+> Correção proposta pelo usuário: *"os eventos se somam, cada um a sua medida,
+> e não multiplicação da multiplicação"*. **Medida e confirmada.**
+
+A v2 usava o **maior** dos multiplicadores. Isso subestima quando duas causas
+atuam no mesmo dia. O produto, por outro lado, superestima — conta o mesmo
+temporal duas vezes.
+
+**Por que somar não duplica:** uma ocorrência pertence a **exatamente uma**
+causa. Árvore caída não é descarga atmosférica. Os alvos são disjuntos.
+
+### Cada causa responde ao seu próprio driver — medido, não suposto
+
+| Causa | n (2025) | rajada | chuva dia | chuva máx/h |
+|---|---|---|---|---|
+| **vento** (árvore, vegetação, vento) | 51.132 | **+0,203** | +0,193 | +0,143 |
+| **raio** (descarga atmosférica) | 8.323 | **+0,032** | +0,221 | **+0,207** |
+| água (inundação, erosão) | 99 | +0,035 | +0,002 | −0,000 |
+
+**Raio praticamente não responde a rajada (0,03).** São mecanismos distintos —
+exatamente o que a soma separada reconhece e o "maior fator" ignorava.
+
+*(Água tem 99 ocorrências: ruído. Fora do modelo.)*
+
+### Validação contra 2025 — o aditivo vence
+
+| Método | MAE do acréscimo | Viés |
+|---|---|---|
+| **Aditivo (v3)** | **1,430** | −0,43 |
+| Maior fator (v2) | 1,764 | **+0,59** |
+
+**19 % menos erro**, e o método antigo **superestimava** sistematicamente.
+
+### Multiplicadores v3
+
+**Vento ← rajada máxima diária**
+
+| Faixa | Mult. | p90 | Dias |
+|---|---|---|---|
+| < 30 km/h | 1,00× | 3,05× | 12.631 |
+| 30–40 | 1,28× | 3,62× | 12.557 |
+| 40–50 | 1,60× | 4,24× | 6.263 |
+| 50–60 | 2,37× | 5,79× | 1.650 |
+| 60–70 | 3,93× | 8,33× | 411 |
+| **≥ 70** | **6,86×** | 14,69× | 68 |
+
+**Raio ← intensidade máxima horária de chuva**
+
+| Faixa | Mult. | p90 | Dias |
+|---|---|---|---|
+| < 1 mm/h | 1,00× | — | 25.562 |
+| 1–3 | 3,78× | 9,28× | 4.419 |
+| 3–6 | 5,05× | 15,80× | 2.192 |
+| 6–12 | 5,91× | 16,71× | 1.179 |
+| **≥ 12** | **7,53×** | 18,81× | 228 |
+
+Driver de raio escolhido **por erro medido** (MAE 1,4300 contra 1,4324 do
+acumulado diário) e por faixas muito melhor povoadas: 228 dias na faixa
+extrema contra 36.
+
+### Fórmula
+
+```
+acréscimo = base_vento × (mult_vento − 1)  +  base_raio × (mult_raio − 1)
+total     = base_total × fator_dia_semana  +  acréscimo
+```
+
+**Exemplo real — Rio, 10/09/2026:** vento +1,6 **e** raio +2,0 = **+3,6**.
+O método do maior fator teria descartado metade da contribuição.
+
+### Correção adicional de escopo
+
+`ANIMAIS` (8.761), `CORROSAO` (149), `INCENDIO` (203) e `QUEIMA` (134) estavam
+no alvo da v2 **apenas porque a categoria começa com "MEIO AMBIENTE"**.
+Animal não é tempo. Removidos — o alvo caiu de 73.114 para **59.455**.
+
+### Baselines zerados
+
+18 municípios tinham `base_raio = 0` — amostra fina em dia calmo, não ausência
+de raio. Receberam piso proporcional ao porte, pela razão estadual
+(raio/total = 0,0039).
+
+---
+
+### A correção anterior (v2): alvo restrito à ocorrência de causa meteorológica
+
+Isolando os 73.114 chamados de causa climática, o sinal que estava diluído em
+93 % de ruído aparece:
+
+| Correlação com | v1 (todas) | **v2 (climáticas)** |
+|---|---|---|
+| Rajada | 0,115 | **0,182** |
+| Chuva | **0,005** | **0,208** |
+
+A correlação com chuva era **praticamente zero** no alvo errado.
+
+### Multiplicadores v2 — sobre a ocorrência climática, normalizado ao dia calmo
+
+Calculados com **média**, não mediana: contagens são aditivas, e a mediana
+colapsa em zero nos municípios pequenos.
+
+| Rajada máx. | Multiplicador | p90 | Dias |
+|---|---|---|---|
+| < 30 km/h | 1,00× | 2,93× | 12.631 |
+| 30–40 | 1,23× | 3,26× | 12.557 |
+| 40–50 | 1,40× | 3,41× | 6.263 |
+| 50–60 | 1,88× | 4,34× | 1.650 |
+| 60–70 | 3,09× | 6,67× | 411 |
+| **≥ 70** | **5,29×** | **11,10×** | 68 |
+
+| Chuva acumulada | Multiplicador | p90 |
+|---|---|---|
+| < 1 mm | 1,00× | 2,75× |
+| 1–10 | 1,84× | 4,51× |
+| 10–25 | 2,72× | 6,60× |
+| 25–50 | 3,24× | 6,91× |
+| ≥ 50 | 4,46× | 8,12× |
+
+### Como a v2 apresenta o resultado
+
+```
+total_esperado = base_total × fator_dia_semana  +  base_clima × (mult − 1)
+                 └──── o que o modelo NÃO prediz ┘   └─ o que ele prediz ─┘
+```
+
+O sistema separa explicitamente as duas parcelas. Dizer que prediz o total
+seria fingir que prevê falha de transformador.
+
+**Exemplo real:** Petrópolis, 11/09/2026, rajada 71 km/h → 5,29× → normal do
+dia 44 + **18,5 de acréscimo climático** = ~63 (pior caso 88).
+**Rio de Janeiro, 10/09:** normal 730 + **15,6** = 745. No Rio o clima é quase
+ruído no volume diário — e o painel mostra isso em vez de esconder.
+
+### ⚠️ O que o modelo ainda não faz
+
+- **Não prediz o total de chamados.** Prediz só a parcela climática.
+- **Não prediz clientes sem energia.** Isso está no dataset de *Interrupções*
+  (~270 MB/ano), que traz unidades consumidoras afetadas. Ver D10.
+- **ERA5 a ~25 km suaviza extremos locais.** Em relevo como o de Petrópolis, a
+  rajada real pode ser muito maior que a da reanálise.
+- **A faixa ≥ 70 km/h tem 68 dias** de amostra. É o melhor número disponível,
+  não um número robusto.
+
+### Decisão de modelagem: o maior fator, nunca o produto
+
+Quando chuva e vento elevam o risco no mesmo dia, a view usa o **maior** dos
+dois multiplicadores, não o produto. Chuva e vento num mesmo temporal não são
+causas independentes — multiplicá-los superestimaria o risco.
+
+### Também carregado
+
+- **Sazonalidade** (2015–2026): janeiro 120 contra junho 88,5 no índice de
+  ocorrências. O mesmo volume de chuva não significa o mesmo em meses diferentes.
+- **Dias críticos por ano** (2010–2025): mínimo 622 (2021), máximo 3.270 (2024).
+  "Dia crítico" é a definição oficial da ANEEL de evento climático de massa.
+- **Baseline por município** dos 92 — de 1,0 (Macuco) a 778,0 (capital).
+- **25 dias-município sob emergência declarada**, do cruzamento dos decretos.
+
+### Em produção
+
+`public.tempo_risco_energia` aplica os limiares à previsão consolidada e devolve,
+por município e dia: faixa de rajada, faixa de chuva, multiplicador, ocorrências
+esperadas, pior caso (p90) e nível de risco.
+
+Exemplo real na primeira execução — **Petrópolis, 11–12/09/2026**: rajada
+71–72 km/h → faixa ≥70 → multiplicador 2,39× sobre baseline 58 →
+**~139 ocorrências esperadas, pior caso 338. Risco alto.**
+
+## 9.3 Bases de dados de descargas atmosféricas — levantamento (2026-09-11)
+
+Pergunta do usuário: *"deve ter alguma base que tenha histórico e meça a
+quantidade de descargas atmosféricas"*. Existe, mas nenhuma serve como driver.
+
+| Fonte | Histórico? | Veredito |
+|---|---|---|
+| **INPE / ELAT — BrasilDAT** | Sim. Terceira maior rede do mundo, maior dos trópicos. | ❌ O que é público são **rankings municipais anuais em PDF** (raios/km²/ano). Não é série diária. |
+| **INPE — `sigma.cptec.inpe.br/raio`** | Tempo real | ❌ Página HTML, sem histórico e sem API. |
+| **GOES-16 GLM (AWS S3, `noaa-goes16`)** | Sim, completo, arquivo a cada 20 s | ⚠️ Verificado: ~602 KB por arquivo × 4.320/dia ≈ **2,6 GB/dia, ~950 GB/ano**. Inviável sob a premissa de custo zero. |
+| **Blitzortung** | Sim | ⚠️ Licença restringe uso; dados brutos exigem participar da rede. |
+
+### O argumento decisivo
+
+Mesmo com histórico perfeito de raios, **o insumo operacional é uma previsão** —
+e nenhum modelo prevê descargas individuais. O driver precisa existir dos
+**dois lados**: histórico para calibrar, previsão para predizer.
+
+| Variável | Tem previsão? | Tem histórico? |
+|---|---|---|
+| Descargas (raio) | ❌ | ✅ | 
+| **CAPE** | ✅ (7 de 8 linhagens, máx ~2.800 J/kg) | ❌ **não existe no ERA5** — verificado, 0 de 72 não-nulos |
+| Intensidade horária de chuva | ✅ | ✅ | ← **o único com os dois** |
+
+Por isso o driver de raio é a intensidade de chuva. Não é a escolha ideal —
+é a única com as duas pontas.
+
+### O caminho para melhorar
+
+Open-Meteo devolve CAPE retroativo via `past_days`: testado, **744/744 horas
+em 30 dias** (em 92 dias só 1.081/2.232 — o limite prático é ~45 dias).
+
+Então a rota é acumular CAPE **próprio**: a coleta passa a guardar CAPE junto
+com a previsão, e em alguns meses haverá histórico pareado com as ocorrências
+mensais da ANEEL. Aí dá para testar se CAPE bate a chuva como preditor de raio.
+
+⚠️ **Estado:** a mudança está escrita em `functions/coletar-previsao/index.ts`
+mas **não publicada** — o `deploy_edge_function` do MCP passou a rejeitar
+parâmetros booleanos e de array nesta sessão. Republicar quando a ferramenta
+voltar. Nada quebra enquanto isso: CAPE não entra em nenhum cálculo atual.
+
+---
+
+### O problema dos 200 MB e sua solução
+
+Um Parquet de 200 MB/ano não cabe no Supabase free, não passa numa Edge Function
+e não pode ser processado localmente (P4).
+
+**Solução — destilação como passo de construção, não de execução:**
+
+- **Google Colab gratuito** como bancada descartável: baixa o ano, filtra RJ
+  (Light e Enel Rio), agrega, e empurra o **destilado** (poucos MB) ao Supabase.
+  Máquina de terceiros, efêmera — não viola P4.
+- **Alternativa:** DuckDB + `httpfs` lê Parquet remoto com *predicate pushdown*,
+  baixando apenas os *row groups* relevantes.
+
+Roda **uma vez** no bootstrap, e depois 1× por mês se desejado.
+
+---
+
+## 9.4 ✅ MODELO v4 — CALIBRADO CONTRA O TOTAL OBSERVADO (2026-09-11)
+
+### O que quebrou a v3
+
+Uma pergunta do usuário — *"dá para ter uma escala fixa de 0 a 100?"* — expôs um
+defeito que nenhuma métrica anterior tinha pego. Os âncoras para a escala
+existiam e eram medidos (mediana, p95 e máximo diário por município). O problema
+apareceu ao perguntar **até onde o modelo consegue chegar**:
+
+| Município | dia calmo | mediana real | p95 | pior de 2025 | **teto da v3** |
+|---|---|---|---|---|---|
+| Rio de Janeiro | 730 | 829 | 1.319 | 1.616 | **842** |
+| Petrópolis | 52 | 66 | 133 | 375 | **78** |
+| Campos | 60 | 99 | 168 | 857 | **75** |
+| Teresópolis | 28 | 32 | 65 | 237 | **47** |
+
+Com rajada ≥70 km/h **e** chuva ≥12 mm/h ao mesmo tempo — todos os
+multiplicadores no talo — a v3 alcançava em média **60% do p95**. Apenas
+**1 município em 92** chegava ao próprio p95.
+
+A causa é aritmética. A v3 dimensionava o acréscimo por **contagem de rótulo**
+de causa em dia calmo, e isso é só **7,8%** do total. Multiplicar 7,8% por 6,86
+acrescenta no máximo ~46%. Os dias realmente ruins são 2× a 6× a mediana —
+fora de alcance por construção.
+
+> **O usuário já tinha desconfiado disso** muito antes, em *"a quantidade de
+> ocorrências/dia está baixa"*. Estava certo, e a razão era mais funda que os
+> multiplicadores que ajustamos na v2 e na v3.
+
+### A observação do usuário que definiu a correção
+
+*"As distribuidoras classificam erroneamente também."*
+
+Isso fecha o diagnóstico: o rótulo de causa **não é medida de magnitude**, é
+ruído com aparência de dado. Numa tempestade, muita queda de árvore entra no
+sistema como falha de equipamento. Qualquer modelo que dimensione pelo rótulo
+herda o erro de quem digitou.
+
+### O que fica e o que cai
+
+**Fica a ideia física da v3**, que é do usuário e não depende de rótulo: vento e
+descarga atmosférica são mecanismos distintos, cada um responde ao seu próprio
+driver, e os efeitos **somam**.
+
+**Cai o uso do rótulo para dimensionar.** A pergunta deixa de ser "quantas
+ocorrências foram rotuladas como vento?" e passa a ser "**quanto o total do dia
+sobe quando a rajada sobe?**".
+
+```
+total_esperado = base × fator_dow + base × ( b_vento(rajada) + b_raio(chuva_h_max) )
+```
+
+Os `b` saem de uma **regressão conjunta** — as duas faixas na mesma regressão,
+o que separa a contribuição de cada driver sem dupla contagem — ajustada contra
+o **excedente observado do total diário**, ponderada por `√base` (município
+grande tem mais sinal). Absorve automaticamente o que foi classificado errado,
+porque nunca olha o rótulo.
+
+### Coeficientes medidos (2025, 92 municípios, 33.580 município-dia)
+
+| Rajada | b | dias | | Chuva máx/h | b | dias |
+|---|---|---|---|---|---|---|
+| <30 | — | 12.631 | | <1 mm | — | 25.562 |
+| 30–40 | +0,115 | 12.557 | | 1–3 | +0,213 | 4.419 |
+| 40–50 | +0,183 | 6.263 | | 3–6 | +0,273 | 2.192 |
+| 50–60 | +0,285 | 1.650 | | 6–12 | +0,286 | 1.179 |
+| 60–70 | +0,402 | 411 | | **≥12** | **+0,330** | 228 |
+| **≥70** | **+0,580** | **68** | | | | |
+
+### Resultado
+
+| | v3 | v4 |
+|---|---|---|
+| viés | −4,53 | **−0,09** |
+| teto médio | 60% do p95 | **81% do p95** |
+| municípios que atingem o próprio p95 | 1 de 92 | **19 de 92** |
+| MAE | 9,96 (só base) | 9,76 |
+
+### A escala 0–100 não funciona — e o motivo importa
+
+Testada, e **satura em 53/100**. Não é falta de calibração: o modelo prevê o
+valor **esperado**, e um dia catastrófico é a cauda da distribuição condicional,
+não a média dela. Ancorar 100 no p99 criaria um topo inalcançável por
+construção — repetindo, em outra roupa, o erro que a v4 foi corrigir.
+
+**O número que funciona é probabilidade:** *chance de o dia entrar nos 10%
+piores daquele município*. Vai de **4,4% a 44,0%** conforme o tempo, contra 10%
+de climatologia. É fixo, é 0–100, e cai na máquina de calibração que o projeto
+já tem (Brier, confiabilidade).
+
+| previsto (rel) | dias | chance de dia ruim |
+|---|---|---|
+| <1,0 | 6.757 | 4,4% |
+| 1,2–1,3 | 7.218 | 10,7% |
+| 1,3–1,4 | 3.816 | 14,5% |
+| 1,4–1,6 | 3.737 | 20,4% |
+| **≥1,6** | 400 | **44,0%** |
+
+### O limite, dito no painel
+
+O tempo explica **12,8%** da variância que sobra depois de descontar porte do
+município e dia da semana. O **skill de Brier é 4,2%** sobre a climatologia.
+Sinal real e usável — 2,8× de ganho no decil mais alto —, mas modesto: a maior
+parte do que faz o telefone tocar não é o tempo. Isso está escrito no cartão,
+não escondido.
+
+### Alvo: chamado, não interrupção distinta
+
+O parquet traz `DscNumInterrupcao`, que ligaria o chamado a uma interrupção real
+— 1.018.800 chamados para 500.646 interrupções, ~2 por evento. Seria o alvo
+fisicamente melhor. **Foi descartado por viés de registro:**
+
+| Distribuidora | chamados | sem id de interrupção |
+|---|---|---|
+| Light | 560.526 | **72,5%** |
+| Ampla | 444.503 | **23,4%** |
+| Energisa | 13.771 | 52,0% |
+
+Usar interrupção subcontaria justamente a área da Light — capital e boa parte da
+metropolitana. É prática de registro, não física.
+
+---
+
+## 9.5 ✅ RECALIBRAÇÃO COM 4 ANOS (2026-09-11)
+
+Primeira execução do procedimento de `calibracao/`. Resolve o D9 e corrigiu o
+número principal do painel.
+
+| | 1 ano (2025) | **4 anos** |
+|---|---|---|
+| município-dia | 33.580 | **123.648** |
+| dias na faixa ≥70 km/h | 68 | **177** |
+| municípios que atingem o próprio p95 | 19 | **28** |
+| MAE | 9,76 | 9,03 |
+| **topo da curva de probabilidade** | **44,0%** | **32,5%** |
+
+**Os 44% eram otimistas.** Vinham de 400 dias; agora são 1.315. O número novo
+não é pessimista — o antigo é que estava apoiado em amostra fina, exatamente na
+ponta que mais importa.
+
+### Coeficientes
+
+| Rajada | 2025 | 4 anos | | Chuva máx/h | 2025 | 4 anos |
+|---|---|---|---|---|---|---|
+| 30–40 | +0,115 | +0,092 | | 1–3 | +0,213 | +0,206 |
+| 40–50 | +0,183 | +0,162 | | 3–6 | +0,273 | +0,259 |
+| 50–60 | +0,285 | +0,223 | | 6–12 | +0,286 | **+0,360** |
+| 60–70 | +0,402 | +0,332 | | ≥12 | +0,330 | **+0,392** |
+| **≥70** | +0,580 | **+0,615** | | | | |
+
+O vento moderado cedeu; a chuva intensa e a rajada extrema subiram. Com um ano
+só, as duas pontas estavam subestimadas.
+
+### Duas armadilhas encontradas
+
+**1. A ANEEL trocou o layout do arquivo a partir de 2026.** Até 2025: `CodIBGE`
+(inteiro) e `DthInicioOcorrenciaAberta`, 15 colunas. De 2026: `CodMunicipioIBGE`
+e `DthIniOcorrencia`, **23 colunas e tudo como texto**. O script quebrou com
+`No match for FieldRef.Name(CodIBGE)`. Agora ele detecta o layout pelo próprio
+arquivo. **Não assumir schema estável entre anos.**
+
+**2. O nível de chamados muda muito entre anos — e isso contaminaria tudo.**
+Em dia calmo, 2023 está em **77%** de 2025 e 2024 em **90%**. Com base única por
+município, essa tendência anual entraria no modelo disfarçada de efeito do tempo:
+2023 teria excedente negativo crônico sem chuva nenhuma explicando, e 2025 o
+contrário. A base passou a ser por **(município, ano)**, então os coeficientes
+saem só da variação *dentro* de cada ano.
+
+O **nível** que vai para produção continua vindo de um ano só — o completo mais
+recente (2025) —, porque precisa refletir um ciclo anual inteiro e a operação de
+hoje. 2026 ainda não tem outubro a dezembro. Coeficientes de todos os anos,
+nível de um: são perguntas diferentes.
+
+---
+
+## 9.6 ✅ CAPE COMO TERCEIRO DRIVER (2026-09-11)
+
+### A conclusão anterior estava certa pela metade
+
+Estava registrado que CAPE só poderia ser testado daqui a meses, porque *"não
+existe no arquivo ERA5"*. Verdade — a reanálise devolve a chave de CAPE com
+todos os valores nulos, e isso foi re-testado antes de qualquer coisa.
+
+O que faltava: a Open-Meteo tem **duas** portas para o passado. Além do ERA5,
+ela arquiva as **previsões** que os modelos emitiram, e esse arquivo
+(`historical-forecast-api`) **tem CAPE e volta a 2021**.
+
+E é a régua mais honesta: em produção o sistema consome previsão, não
+reanálise. Calibrar contra previsão arquivada mede o driver na mesma régua em
+que ele vai ser usado.
+
+### O teste
+
+Mesma estrutura, mesmo número de faixas, mesmos 123.648 município-dia. Só muda
+o driver do termo de raio.
+
+| modelo | MAE | viés | R² |
+|---|---|---|---|
+| vento + chuva *(anterior)* | 9,035 | −0,227 | 0,8538 |
+| vento + CAPE | 9,063 | −0,127 | 0,8574 |
+| **vento + chuva + CAPE** | **8,971** | **+0,034** | **0,8582** |
+| só vento | 9,196 | −0,746 | 0,8516 |
+
+**CAPE sozinho não bate a chuva. Os dois juntos batem os dois sozinhos.**
+
+A correlação entre `chuva_h_max` e `cape_max` é apenas **+0,33** — carregam
+informação diferente, e por isso somar vence escolher. Os coeficientes de chuva
+**caem** quando o CAPE entra (1–3 mm: +0,206 → +0,162): parte do que se
+atribuía à chuva era convecção mal alocada.
+
+| Rajada | b | | Chuva máx/h | b | | CAPE | b |
+|---|---|---|---|---|---|---|---|
+| 30–40 | +0,045 | | 1–3 | +0,162 | | 200–500 | −0,007 |
+| 40–50 | +0,116 | | 3–6 | +0,191 | | 500–1k | +0,059 |
+| 50–60 | +0,190 | | 6–12 | +0,275 | | 1k–2k | +0,139 |
+| 60–70 | +0,305 | | ≥12 | +0,309 | | **≥2k** | **+0,180** |
+| **≥70** | **+0,586** | | | | | | |
+
+Ganho em erro: 0,7%. **O que melhora de verdade é o viés**, que vai a zero, e o
+alcance: 28 → **31 municípios** atingem o próprio p95. Custo operacional zero —
+a coleta de CAPE já rodava desde a manhã.
+
+Ressalva registrada sem massagem: a faixa 200–500 J/kg deu **−0,007**,
+tecnicamente quebrando a monotonicidade. É 4% da amplitude, dentro do ruído de
+17.441 dias.
+
+### Consolidação entre linhagens
+
+As famílias discordam na ordem de grandeza (mediana ECMWF 460 J/kg contra 30 do
+GFS) porque cada centro define CAPE de um jeito e a Open-Meteo não normaliza.
+A **mediana entre famílias** neutraliza isso, e a distribuição resultante em
+produção foi verificada contra a do arquivo de calibração: mesma escala.
+
+O CAPE é consolidado exatamente como a chuva já era — mediana entre famílias
+por hora, depois máximo do dia.
+
+### Dois tropeços de engenharia
+
+**Timeout.** Varrer o JSONB uma segunda vez levou `risco_energia` a 2,97 s
+contra o limite de 3 s do `anon`, e o cartão sumiu do painel. Mover o CAPE para
+dentro do `consolidado` baixou para 2,2 s — ainda raspando. A solução foi
+**snapshot atualizado a cada 20 min** (`tempo.risco_snapshot`), o mesmo remédio
+que já tinha resolvido o `tempo_status`: recalcular a cada carregamento era
+desperdício, já que os dados só mudam 4× por dia. Resultado: **0,2 s**.
+
+**POLICY ≠ GRANT, pela terceira vez.** Criei a política RLS da tabela nova e
+esqueci o `grant select ... to anon`. São mecanismos separados e o `anon`
+precisa dos dois; a view pública é `security_invoker` e devolveu 401. Ver R11 e
+R12 — esta é a terceira porta do mesmo problema.
+
+---
+
+## 9.7 ✅ OS PESOS ENTRARAM EM VIGOR (2026-09-28)
+
+O princípio §5.2 — *o peso vem de skill medido, não de opinião* — deixou de ser
+promessa em **2026-09-28**. `pesos_em_uso = true`.
+
+### O caminho até aqui
+
+| Data | Verificações | Grupos com peso |
+|---|---|---|
+| 2026-09-12 | 18.128 | 0 — travados em **24 horas distintas** de 72 |
+| 2026-09-15 | 53.392 | 0 — o mais adiantado em 57 de 72 |
+| 2026-09-28 | **204.120** | **9 de 24** |
+
+O gargalo foi sempre a trava de horas, nunca a de amostras: em 12/09 o grupo
+líder já tinha **349 comparações** contra as 30 exigidas, e mesmo assim não
+decidia nada. Era exatamente o efeito que a trava existe para produzir. Ver a
+decisão de 2026-09-11 sobre pseudo-replicação em §15.
+
+Ativos hoje: as **oito regiões na faixa 0-6h** (336 a 351 horas distintas) mais
+a Metropolitana em **6-24h**. Três grupos estão a uma hora de fechar.
+
+### O ranking medido — 25.078 comparações por linhagem
+
+| Família | Erro médio (mm/h) | Viés | Lidera em |
+|---|---|---|---|
+| **DWD ICON** | 0,271 | −0,061 | 12 de 24 |
+| NOAA GFS | 0,311 | +0,003 | 5 |
+| Météo-France ARPEGE | 0,322 | +0,027 | 1 |
+| ECMWF IFS 0.25° | 0,340 | +0,060 | 1 |
+| CMA GRAPES | 0,351 | +0,045 | 2 |
+| UK Met Office | 0,363 | +0,084 | 3 |
+| JMA GSM | 0,389 | +0,120 | 0 |
+| CMC GEM | 0,418 | +0,148 | 0 |
+
+Três leituras que valem registro:
+
+**O viés ordena a tabela.** A correlação entre viés e erro é quase perfeita:
+quem prevê chuva a mais erra mais. O ICON lidera com o único viés negativo; o
+GEM é o último com o maior viés positivo. Não foi imposto pelo método — a
+regressão de peso só olha MAE — e por isso é um achado, não um artefato.
+
+**O ECMWF está em quarto.** O modelo de maior prestígio do mundo não é o melhor
+*aqui, nesta escala, para chuva horária*. É precisamente o motivo de medir em
+vez de supor, e a refutação mais limpa que o projeto produziu de uma intuição
+que todo mundo teria.
+
+**O ranking não mudou com 15× mais dados.** A ordem medida em 15/09, com
+25 mil comparações no total, sobreviveu às 204 mil. Estabilidade é evidência de
+sinal, não de sorte.
+
+### Os pesos em vigor
+
+`peso = max(0,25 ; (melhor_mae + 0,1) / (mae + 0,1))`, dentro de cada grupo.
+
+Na prática vão de **1,00** (o líder do grupo, que não é penalizado) a **0,58**
+(GEM no seu pior grupo). O piso de 0,25 — criado para nunca silenciar uma
+linhagem que possa ser a única a acertar o evento raro — **nunca chegou perto de
+ser tocado**. O amortecimento de +0,1 no numerador e no denominador foi o que
+segurou isso: sem ele, um grupo de chuva fraca com MAE 0,05 contra 0,40 daria
+peso 0,12.
+
+### Um número errado, achado ao conferir
+
+`skill_grupos_ativos` contava **linhas** de `tempo.skill`, que são
+(grupo × linhagem). Com 9 grupos e 8 linhagens o painel exibia **"72 grupos
+atingiram amostras suficientes"** — mais grupos do que os 24 que existem no
+total, e sob um rótulo que dizia explicitamente *região × variável × horizonte*.
+
+Corrigido na migration **065**: conta grupos distintos. O texto do painel também
+estava incompleto — dizia "amostras suficientes" quando são duas travas, e não
+dizia o que acontece nos grupos restantes.
+
+Lição, que é a mesma de sempre neste projeto: **o número certo sob o rótulo
+errado é um número errado.** Só apareceu porque a trava disparou e alguém foi
+ler a frase inteira.
+
+### O que isto ainda não é
+
+Peso medido é a camada 1 (chuva). A camada 3 (impacto elétrico) continua
+**calibrada mas não verificada** — `impacto_pares_verificados = 0`, com 21 dias
+de previsão congelada esperando o lote da ANEEL. Ver §10.1 e R10.
+
+---
+
+## 9.8 ✅ CALIBRAÇÃO MEDIDA E MOSTRADA (2026-09-28)
+
+A §5.4 diz que *probabilidade sem calibração é mentira educada*. Era promessa
+escrita: `tempo.atualizar_calibracao()` rodava às 04:50 desde o início, a tabela
+enchia todo dia, e **nada no painel a lia**.
+
+### O que ela diz — 25.078 horas conferidas
+
+| O painel anuncia | Choveu de fato | Horas |
+|---|---|---|
+| 0% · 0 de 8 | 2,5% | 16.184 |
+| 12,5% · 1 de 8 | 7,0% | 2.819 |
+| 25% · 2 de 8 | 13,3% | 1.536 |
+| 37,5% · 3 de 8 | 17,9% | 1.214 |
+| 50% · 4 de 8 | 18,6% | 954 |
+| 62,5% · 5 de 8 | 27,7% | 917 |
+| 75% · 6 de 8 | 34,9% | 751 |
+| 87,5% · 7 de 8 | 41,0% | 532 |
+| **100% · 8 de 8** | **43,3%** | 171 |
+
+O painel é otimista por um fator de ~2 em toda a escala.
+
+### O número que dói
+
+```
+frequência base      8,0%
+Brier climatologia   0,0735
+Brier como está      0,0869   →  skill −18%
+Brier calibrado      0,0637   →  skill +13%
+```
+
+**Lida como probabilidade, a fração de concordância informa menos do que
+repetir "8%" todo dia.** Mas a coluna observada é **monotônica** — 2,5 → 7 →
+13 → 18 → 19 → 28 → 35 → 41 → 43 — o que significa que o painel *ordena* muito
+bem e está apenas na escala errada. É o caso que uma tabela de tradução
+conserta, e conserta para skill positivo.
+
+### O que é erro e o que é escala
+
+Parte da diferença **não é erro do modelo**: ele prevê chuva numa célula de
+13–25 km e o pluviômetro mede um ponto. Área contra ponto derruba a frequência
+observada por construção — é o mesmo motivo que levou, em 2026-09-10, a adotar
+a mediana entre estações como observado.
+
+Não dá para separar as duas parcelas com o que existe hoje, e o documento não
+finge que dá. Para quem lê o painel, porém, a consequência é idêntica: quando
+ele diz 100%, choveu na estação em 43% das vezes. É isso que passou a ser dito.
+
+### O que foi construído
+
+`public.tempo_calibracao` (migration 066) — as nove faixas mais os três Brier
+como colunas de janela, para a **fórmula viver no banco e não no JavaScript**.
+O painel mostra em três lugares:
+
+1. **Cartão principal** — uma linha sob a contagem: *"historicamente, isto virou
+   chuva em 43% das vezes"*. A fração de concordância continua ali, porque
+   responde a outra pergunta; as duas cabem.
+2. **Tooltip do mapa de chuva** — *"6 de 8 famílias preveem chuva · medido: 35%
+   viraram chuva"*.
+3. **Monitor**, terceira seção — a tabela inteira com o Brier contra a
+   climatologia, dito nos dois modos.
+
+A busca é pela probabilidade **mais próxima**, não por índice: se um dia entrar
+uma nona família, as frações deixam de ser k/8 e um índice fixo apontaria para
+a faixa errada em silêncio.
+
+### Temperatura no topo
+
+No mesmo dia, com alerta de **GRANDE PERIGO por onda de calor vigente**, os
+quatro números do topo do painel eram `0%`, `0%`, `0,0 mm` e `48 km/h` — a
+história do dia estava invisível. Entrou um quinto tile com máxima e mínima de
+24 h, a partir do `temp_mediana` que já vinha na mesma consulta.
+
+Sem etiqueta de "calor extremo" por limiar fixo: o alerta do INMET já está no
+cartão acima e, pela §5.3, órgão oficial **sobrepõe** a previsão. Um limiar meu
+que não dispara durante um GRANDE PERIGO vigente seria lido como "não há
+problema" — a §5.8 de novo.
+
+### O que continua sem medida
+
+Os 24 grupos de skill são **todos de chuva**. O CEMADEN só mede chuva, então
+vento e temperatura não têm como ganhar peso por esse caminho — e a rajada é um
+dos três drivers da camada 3, ou seja, **entra no cálculo de risco sem nunca ter
+sido verificada**. **O Alerta Rio foi investigado e descartado em 2026-09-28**, por decisão do
+usuário. Tem vento: oito estações meteorológicas (Vidigal, Irajá, Jardim
+Botânico, Barra/Riocentro, Guaratiba, Santa Cruz e mais duas). Mas a feed
+pública que já consumimos (`/json/chuvas`) traz só `kind: "pluviometric"` —
+chuva, 33 estações, nenhum campo de vento; as páginas ao vivo das
+meteorológicas exigem login; e o único acesso público é um arquivo histórico
+por estação-ano (1997–2026), via formulário POST. Daria série longa da capital,
+não ciclo diário. Oito estações numa cidade só, com download manual, não pagam
+o custo de manutenção.
+
+O candidato que resta é o INMET (26 estações automáticas no RJ, §16),
+mas em 2026-09-28 `apitempo.inmet.gov.br` aceitou a conexão e a derrubou em
+seguida (`Connection reset`), tanto na lista de estações quanto na série
+horária. Precisa ser testado de outra rede antes de virar plano.
+
+---
+
+## 10. Verificação de impacto — ⛔ REMOVIDA em 2026-09-10
+
+> **Decisão do usuário: o botão "faltou luz aqui" foi removido.**
+>
+> Consequência assumida: a camada de impacto perde a **validação contínua**.
+> Ela ainda pode ser *treinada* com o histórico da ANEEL (§9), mas não terá
+> como saber se está acertando no presente — o loop de verificação da camada 3
+> fica aberto.
+>
+> Ganho colateral: some a única superfície de **escrita** exposta ao `anon`,
+> e com ela o único `SECURITY DEFINER` chamável sem autenticação. A tabela
+> `tempo.reporte_falta_luz` e a função permanecem no banco, sem grant e sem
+> policy — inacessíveis publicamente, prontas caso o botão volte.
+>
+> O texto abaixo fica como registro do desenho original.
+
+### Desenho original (inativo)
+
+Não existe fonte pública, automatizada e em tempo real de interrupções no RJ
+(salvo o RADAR, ainda não confirmado). Light e Enel têm mapas próprios sem API
+aberta; a ANEEL publica DEC/FEC apenas agregado.
+
+**Decisão:** um botão no HTML — **"faltou luz aqui agora"** — dois cliques
+(bairro + horário), gravando no Supabase.
+
+Com 3 pessoas em bairros distintos ao longo de meses, obtém-se um conjunto de
+verificação pequeno mas **real**. Custo zero, volume irrisório. É, provavelmente,
+o ativo mais original que o projeto pode gerar: um dado que não existe
+publicamente.
+
+---
+
+## 10.1 ✅ VERIFICAÇÃO DO IMPACTO — o conserto da amnésia (2026-09-11)
+
+O princípio §5.4 diz que probabilidade sem calibração é mentira educada. A
+camada 3 vivia fora dele: publicava "32,5% de chance de dia ruim" e ninguém
+conferia.
+
+**O diagnóstico corrente estava errado.** A explicação que eu vinha repetindo —
+*"não dá para verificar porque a ANEEL publica em lote"* — descrevia um atraso,
+não um impedimento. Dado que chega atrasado ainda é dado.
+
+O impedimento real era outro: `tempo.risco_energia` é uma **view calculada na
+hora**. Nada guardava o que o painel tinha dito. Quando o lote chegasse, não
+haveria com o que comparar — e previsão não gravada é previsão perdida para
+sempre. Cada dia que passava era um dia que nunca mais se verificaria.
+
+### O que foi construído
+
+| Objeto | Papel |
+|---|---|
+| `tempo.impacto_previsto` | Congela a previsão. Vetor de 6 posições por (município, dia alvo): índice 1 = previsto no próprio dia, índice 6 = com 5 dias de antecedência |
+| `tempo.impacto_snapshot()` | Cron diário às 10:00 BRT, depois da coleta das 09:30 |
+| `tempo.impacto_observado` | O que aconteceu, carregado do lote da ANEEL |
+| `tempo.impacto_param` | `limiar_dia_ruim` = 2,19. Fora do código, para reescorar sem recarregar |
+| `tempo.impacto_pontuar()` | Brier e confiabilidade **por antecedência** |
+| `tempo.impacto_skill` · `tempo.impacto_confiabilidade` | O placar |
+
+Formato em vetor, mesma economia de `tempo.observacao_dia`: 92 linhas/dia em
+vez de 552. Dois anos de retenção cabem em ~67 mil linhas.
+
+### Calibrar ≠ verificar
+
+Calibrar ajusta o modelo ao passado; verificar confere se a previsão **que foi
+ao ar** acertou. Usar o mesmo dado para as duas coisas seria medir o modelo com
+a própria régua. Por isso o passo 4 do procedimento só aceita dias que já
+tinham previsão congelada *antes* de o dado chegar.
+
+### Estado
+
+Nada verificado ainda — a coleta de previsão começou em 10/09 e a ANEEL só
+publicou até setembro. **5 dias já congelados.** A primeira aferição sai quando
+o próximo lote chegar; a varredura das quartas avisa.
+
+O painel declara isso em texto no cartão de impacto, em vez de exibir um número
+como se fosse aferido.
+
+---
+
+## 11. Ordem de construção
+
+**(a) chuva → (c) energia → (b) deslizamento**
+
+| Ordem | Entrega | Justificativa |
+|---|---|---|
+| **1º — (a)** | "Vai chover forte nas próximas 6 h aqui?" | Pré-requisito físico de todo o resto. É a fundação. |
+| **2º — (c)** | "A luz vai cair hoje?" | Viabilizado pelos 8 anos da ANEEL. É o **diferencial real** — não existe montado publicamente para o RJ. |
+| **3º — (b)** | "Risco de deslizamento na Serra?" | **Terceirizado ao CEMADEN.** Exige dado geotécnico, declividade, saturação e ocupação. O CEMADEN já faz bem, com rede própria. Competir seria desperdício — melhor **consumir o alerta deles** como camada 2. |
+
+---
+
+## 12. Stack e infraestrutura
+
+| Componente | Escolha | Observação |
+|---|---|---|
+| **Backend / banco / cron / proxy** | Supabase **`PregadorAPP`** (`hmwevcpcelmwnonbeojy`, `us-east-1`), **schema `tempo` isolado** | ⚠️ **`legno-lp` intocado.** O plano free trava em 2 projetos ativos (R7), então o TEMPO virou schema separado dentro do PregadorAPP. Nada em `public` do app bíblico foi alterado, salvo 4 funções prefixadas `tempo_*` (§7 abaixo). |
+| **Front** | HTML standalone na **Vercel** | `tempo-rj-luis-claudio-lopes-da-cruzs-projects.vercel.app` |
+
+### Estado da implantação (2026-09-11)
+
+| Item | Estado |
+|---|---|
+| Schema `tempo` | ✅ 22 tabelas, RLS em todas, retenção, 35 migrations |
+| 92 pontos (sedes municipais do RJ) | ✅ IBGE + geocodificação, validados |
+| 8 linhagens de modelo | ✅ verificadas empiricamente contra a API |
+| Edge Function `tempo-coletar-previsao` | ✅ **v3** (2026-09-11), autenticada por segredo próprio, agora com **CAPE** |
+| `pg_cron` | ✅ 9 jobs — ver tabela de horários abaixo |
+| Primeira coleta real | ✅ **736 linhas** (92 × 8) em 12,6 s, zero erros |
+| Views de fusão | ✅ probabilidade por família, testada |
+| Front na Vercel | ✅ publicado |
+| **Camada 2 — observação** | ✅ Alerta Rio (33 pluviômetros na capital) **+ CEMADEN (~204 estações vivas, 64 municípios)**, coleta horária |
+| **Camada 2 — alertas oficiais** | ✅ INMET, filtrado ao RJ, com o texto de `riscos` |
+| **Bloco [5] — verificação** | ✅ `tempo.verificar()`, horária, **multifonte**. Primeira rodada com CEMADEN: **984 pares novos**, as 8 regiões do estado |
+| **Skill / pesos** | ✅ `tempo.atualizar_skill()` diária; piso duplo — 30 amostras **e** 72 horas distintas (anti-pseudo-replicação) |
+| **Calibração (Brier)** | ✅ `tempo.atualizar_calibracao()` diária |
+| **Camada 3 — impacto** | ✅ **três drivers** (vento + chuva + convecção), 123.648 município-dia. Servido por snapshot, 0,2 s. Ver §9.4 a §9.6 |
+| **Normal climatológica** | ✅ `tempo.clima_normal` 1991–2020 (ERA5), **92 de 92 municípios**, 1.104 linhas. Baixada em duas etapas: a cota horária da Open-Meteo estourou no meio e o script retomou na hora seguinte |
+| **Varredura semanal da ANEEL** | ✅ quartas 06:00/06:05 — vigia `last_modified` no CKAN sem baixar nada e levanta bandeira quando há dado novo |
+| **Procedimento de recalibração** | ✅ escrito, testado e reprodutível em `C:\TEMPO\calibracao\` |
+| **CAPE (energia convectiva)** | ✅ **gravando desde 2026-09-11 09:30 BRT.** 644 de 736 linhas por emissão (92 pontos × 7 linhagens; a JMA devolve a chave só com nulos e a guarda a descarta). Não entra em cálculo nenhum hoje — é lastro para o D11. |
+| **Retenção** | ✅ `tempo.observacao_dia` 120 dias (como a observação horária) e `tempo.cemaden_req` 7 dias — a fila do `pg_net` não expira sozinha, só as respostas |
+| Migrations | 55 aplicadas |
+| Edge Functions | 3 (`previsao`, `observacao`, `tempo-rj` inerte) |
+| Jobs `pg_cron` | 13 ativos |
+| Front — alertas oficiais | ✅ ordenados por gravidade, com texto de risco |
+| Front — risco de impacto | ✅ 5 dias, nível + multiplicador + ocorrências esperadas |
+| Front — status de aprendizado | ✅ o painel declara que ainda não tem pesos |
+| **Painel — legenda e cores do risco** | ✅ **Publicado e conferido em 2026-09-11** (byte a byte idêntico ao local, mesmo `sha256`). Correções: (1) a barra pintava o segmento de vento pelo *nível do dia* e o de raio por *causa* — duas dimensões no mesmo canal de cor, o que tornava vento-normal indistinguível de raio; agora **cor = causa** (azul vento, violeta hachurado raio) e a gravidade vive só na palavra colorida; (2) legenda explicando as duas cores, as quatro gravidades e o fato de a barra ser proporcional ao **pior dia da janela**, não a escala fixa; (3) leitura numérica em dois níveis; (4) **`MODERADO` vazava por baixo da barra** — a coluna da data era fixa em 78px com conteúdo variável, e `NORMAL`/`ALTO` só escapavam porque o respiro de 12px absorvia a sobra; agora 92px, palavra em linha própria e `overflow:hidden` como trava; (5) coluna única no celular. |
+| Proteção de login da Vercel | ✅ **desligada** — site público e validado de ponta a ponta |
+
+**Linter de segurança:** sem achados meus em aberto. O `ERROR` de
+`SECURITY DEFINER VIEW` em `tempo_status` foi eliminado trocando a view por um
+**snapshot** atualizado por job interno — o `anon` lê uma tabela comum, sem
+escalação de privilégio em ponto algum. Os achados remanescentes são todos do
+`PregadorAPP` (ver D6).
+
+### 12.1 Estado da implantação (2026-09-28)
+
+| Item | 2026-09-11 | 2026-09-28 |
+|---|---|---|
+| Migrations | 55 | **65** |
+| Tabelas em `tempo` | 22 | **34** |
+| Views públicas `tempo_*` | 3 | **12** |
+| Jobs `pg_cron` | 13 | 13 |
+| Edge Function `tempo-coletar-previsao` | v3 (CAPE) | **v4 — + `cloud_cover`** |
+| Pesos por skill | ❌ todos iguais | ✅ **9 de 24 grupos**, ver §9.7 |
+| Verificações acumuladas | ~1.000 | **204.120** |
+| Schema `tempo` | 4,4 MB | **132 MB** |
+| Banco inteiro (compartilhado) | 144 MB | **280 MB de ~500** |
+
+⚠️ **O orçamento apertou mais rápido que a projeção.** A §6 previa ~71 MB em
+regime permanente para o `tempo`; são 132 MB. Duas causas, ambas conhecidas e
+nenhuma anômala: `tempo.previsao` está em **98 MB** com 27.968 linhas (a
+retenção de 10 dias funciona — o número de linhas bateu a projeção; o que errou
+foi o custo por linha, ~3,5 KB, porque TOAST comprime menos do que eu supus e o
+`cloud_cover` acrescentou uma sétima série) e `tempo.verificacao` em **24 MB**
+com 201 mil linhas. Ver R13.
+
+### 12.2 O painel — navegação e cartões (2026-09-15 a 2026-09-28)
+
+**Busca de município no lugar do seletor.** O `<select>` obrigava a rolar 92
+itens. Virou campo de texto que filtra conforme se digita, **ignorando acento e
+caixa**: `sao gon` acha São Gonçalo, `petro` acha Petrópolis. Não é o
+`<datalist>` nativo — ele não normaliza acento, e num estado com Guapimirim,
+Paraíba do Sul e Conceição de Macabu é justamente o que mais atrapalha. São
+~50 linhas de JS, sem biblioteca.
+
+**Região e concessionária: pedidas, construídas, e uma delas removida.** O
+usuário pediu três filtros encadeados (concessionária → região → município) e
+um Top-5 de risco. Foram construídos os quatro, inclusive
+`tempo.municipio_distribuidora` (mapeamento por ANEEL, com municípios divididos
+entre duas distribuidoras — Petrópolis é 87% Light / 11% Enel) e
+`ponto.regiao_painel` (as regiões **como as distribuidoras e o senso comum
+dividem**, não as oficiais do estado: Região dos Lagos e Costa do Sol separadas,
+por lista do próprio usuário).
+
+Depois o usuário mandou **tirar o filtro de região** e deixar só municípios em
+ordem alfabética. A razão é boa e vale como princípio: *filtro hierárquico exige
+saber a geografia antes de achar o que se procura*. Quem quer Nova Friburgo não
+deveria precisar lembrar que ela é Serrana.
+
+O que sobrou dos dois: a região vira **subtítulo** de cada item do Top-5 e de
+cada linha da busca, e a concessionária vira um **resumo agregado** no panorama
+("quantos municípios de cada distribuidora estão acima do normal hoje"). Ou
+seja: continuam informando, deixaram de filtrar. Dado deletado seria perda;
+dado promovido a rótulo é ganho.
+
+**Cartão "Como o tempo deve ficar, hora a hora"** (migration 063). Resolve o
+§5.8(b). Ícones em SVG — sol, lua, sol entre nuvens, nublado, encoberto, garoa,
+chuva, chuva forte, tempestade — desenhados a partir da **mediana das 8
+famílias** para cobertura de nuvem e chuva na mesma hora.
+
+Regra de precedência: **chuva manda no ícone; sem chuva, quem decide é a
+nuvem.** Chove com o céu carregado, e mostrar "encoberto" numa hora de chuva
+esconderia o que importa. À noite sol vira lua: Rio fica no trópico, nasce ~6h e
+põe ~18h o ano todo, então não vale puxar efeméride.
+
+Exigiu coletar `cloud_cover`, que não estava sendo guardado. Verificado antes de
+mexer: **as 8 linhagens publicam**, 48 de 48 horas válidas. Na primeira coleta
+apareceu um caso que ilustra bem o §5.1 — para a mesma hora no Rio, o CMA dizia
+**0%** de nuvem enquanto as outras sete diziam de 83% a 100%.
+
+**Monitor de aprendizado e desempenho** (migrations 062 e 064). Dois blocos
+atrás de um botão, no fim do cartão "Como ler isto":
+
+- *Andamento* — por grupo, as duas travas em barras (30 comparações, 72 horas),
+  com o líder parcial. Quando a diferença entre o melhor e o pior MAE é menor
+  que 0,1, a coluna diz **"ainda empatados — choveu pouco: todos acertam
+  prevendo zero"** em vez de coroar alguém. Ranking construído sobre um período
+  seco engana, e monitor que engana é pior que monitor nenhum.
+- *Desempenho* — o ranking das 8 linhagens com MAE ponderado por amostras, viés
+  em palavras ("prevê chuva a mais") e em quantos grupos cada uma lidera.
+
+A decisão de projeto aqui: **mostrar a medição antes de ela valer, marcada como
+provisória.** O sistema sabe quem erra menos muito antes de poder agir, e
+esconder isso até a trava abrir seria tratar o usuário como quem não aguenta um
+número com ressalva. O cartão diz, em destaque, *"medido, mas ainda sem
+efeito"*.
+
+Custo: ambas as views agregam ~192 linhas de `tempo.skill` em **2,5 ms** — não
+precisaram de snapshot como o `risco_energia` precisou.
+
+### Fuso horário — verificado em 2026-09-11
+
+O `pg_cron` **só aceita UTC**; não há o que configurar. O que importa é que o
+agrupamento por dia seja civil local, e é: `tempo.risco_energia` (camada 3) e
+`tempo.observacao_dia` (CEMADEN) usam `AT TIME ZONE 'America/Sao_Paulo'`
+explicitamente, e o painel formata com `getHours()`/`getDate()`, que renderizam
+no fuso do navegador. Se a camada 3 agrupasse em UTC, a "chuva do dia"
+começaria às 21h do dia anterior e os multiplicadores cairiam no dia errado.
+
+| Job | BRT | UTC |
+|---|---|---|
+| Coleta de previsão | **03:30 · 09:30 · 15:30 · 21:30** | `30 0,6,12,18` |
+| Observação (Alerta Rio) | todo :05 | `5 * * * *` |
+| CEMADEN — dispara / recolhe | todo :08 e :12 | `8` / `12 * * * *` |
+| Verificação | todo :25 | `25 * * * *` |
+| Status | a cada 15 min | `*/15` |
+| Retenção | 00:15 | `15 3` |
+| Skill | 01:40 | `40 4` |
+| Calibração | 01:50 | `50 4` |
+| **Varredura ANEEL** | **quarta 06:00 / 06:05** | `0 9 * * 3` / `5 9 * * 3` |
+| **Congelar previsão de impacto** | **10:00** | `0 13 * * *` |
+| **Snapshot do risco** | a cada 20 min | `*/20 * * * *` |
+
+**Endereço do painel:** https://tempo-rj.vercel.app
+(alias longo: https://tempo-rj-luis-claudio-lopes-da-cruzs-projects.vercel.app)
+
+⚠️ **Limitação do conector Vercel:** o token do MCP publica deploys, mas recebe
+`403 — must re-authenticate to this scope` em qualquer alteração de configuração
+do projeto. Mudanças em settings precisam ser feitas pela UI.
+
+**Superfície criada em `public`** (mínima e prefixada, para não mexer na config
+do projeto): `tempo_alvos_coleta()`, `tempo_ingerir_previsao()`,
+`tempo_log_coleta()` (todas só `service_role`), `tempo_reportar_falta_luz()`
+(sem grant desde a remoção do botão), e as views `tempo_municipios`,
+`tempo_previsao`, `tempo_alertas`.
+
+**Volume medido (2026-09-11).** Uma coleta completa custava 1,36 MB; com o CAPE
+passa a **~1,71 MB** (medido no payload real: CAPE são inteiros de 4 dígitos,
+não decimais curtos, e acrescenta **25,6%** ao blob). Com retenção de 10 dias e
+4 coletas/dia, a previsão vai de ~54 MB para **~68 MB** antes da compressão TOAST.
+
+O CEMADEN acrescenta **~3 MB** nos 120 dias de retenção, porque grava vetor de
+24 horas por município/dia (~64 linhas/dia) e não uma linha por leitura
+(~3.000/dia, que custariam ~125 MB).
+
+⚠️ **O orçamento de 500 MB é compartilhado com o PregadorAPP.** O banco inteiro
+está hoje em **144 MB**, dos quais o schema `tempo` são apenas 4,4 MB — o resto
+é do outro projeto. Em regime permanente o TEMPO deve ocupar ~71 MB, levando o
+total a ~210 MB. Folga confortável, mas não são 500 MB só nossos.
+### Componentes de apoio — fora do runtime
+
+| Componente | Escolha | Observação |
+|---|---|---|
+| **Destilação histórica** | Google Colab gratuito ou DuckDB/httpfs | Passo de bootstrap, não de runtime |
+| **Armazenamento frio** (se necessário) | Cloudflare R2 (10 GB grátis) | Plano B se os 500 MB apertarem |
+| **Alerta ativo** (a decidir) | Serviço de e-mail via conector | Ver §14 |
+
+### Conectores disponíveis e seu papel
+
+**Em uso:** Supabase (backend completo, migrations, Edge Functions, RLS,
+`get_advisors` para lint de segurança) · Vercel (hospedagem) · Navegador
+(inspeção do painel RADAR).
+
+**Na manga:** Cloudflare (R2 / Workers) · Serviço de e-mail (alerta ativo) ·
+Artifact (hospedagem privada alternativa).
+
+**Irrelevantes:** Canva, Expo/EAS, Supermetrics, Notion, Gmail, Calendar,
+ElevenLabs, agendamento de redes sociais.
+
+---
+
+## 13. Riscos conhecidos
+
+| # | Risco | Mitigação |
+|---|---|---|
+| R2 | **A `anon key` fica visível no HTML.** | Normal e esperado — mas a segurança inteira depende de **RLS bem configurada**: leitura pública nas tabelas de previsão, escrita restrita e protegida contra abuso no botão de reporte. "Amigo confiável" **não** substitui RLS. |
+| R3 | **Open-Meteo é gratuito para uso não comercial**, com limite de requisições. | Volume estimado (120 pontos × 4 modelos × poucas vezes/dia) deve caber. Coletar no servidor, nunca no navegador de cada usuário. |
+| R6 | **Dados da ANEEL têm atualização mensal** — inúteis para verificação em tempo real. | São para **treino**, não para verificação corrente. Papéis distintos. |
+| **R10** | ⚠️ **A verificação do impacto é retrospectiva, não corrente.** ✅ **Mitigado em 2026-09-11:** `tempo.impacto_previsto` congela diariamente o que o painel previu, e `tempo.impacto_pontuar()` produz Brier e confiabilidade por antecedência quando o lote da ANEEL chega. Ver §10.1. | O que **não** é resolvível: a aferição sempre chega semanas depois, porque a fonte publica em lote. Limite da fonte, não do desenho. O painel declara quando um número ainda não foi verificado. |
+| **R11** | ⚠️ **Permissão de leitura tem DOIS mecanismos, e o `anon` precisa dos dois.** Três ocorrências em 2026-09-11: (1) `DROP VIEW` apagou o grant de `tempo.risco_energia` e o cartão sumiu com 401; (2) `tempo.clima_normal` tinha RLS sem policy e o LEFT JOIN devolveu **nulo em silêncio**; (3) `tempo.risco_snapshot` ganhou policy mas não grant → 401. | Para tabela nova lida pelo painel, as três linhas juntas: `enable row level security` + `create policy leitura_publica ... to anon` + **`grant select ... to anon`**. Ao recriar view em `tempo.`, repor o grant na mesma migration. |
+| **R12** | ⚠️ **View `security_invoker` + tabela com RLS sem policy = coluna nula em silêncio.** `public.tempo_previsao_dia` juntava `tempo.clima_normal` diretamente; o `anon` via zero linhas e o LEFT JOIN devolvia nulo, sem erro. | Padrão do projeto: a view **interna** faz o trabalho (roda com direitos do dono) e a pública é casca fina. Join em tabela de referência vai para dentro. |
+| **R8** | ⚠️ **O schema das ferramentas MCP pode degradar ao retomar uma sessão.** Confirmado em 2026-09-11: `deploy_edge_function` e `deploy_to_vercel` passaram a receber `{"type":"object"}` sem propriedades, e qualquer parâmetro que não seja texto (array, booleano) chega convertido em string e é rejeitado por validação. O conector reportava-se **saudável** (29 ferramentas) e o `reconnect` recusou justamente por isso. Compactar a sessão **não** recarrega schema. | **Sessão nova.** Diagnóstico rápido: um deploy de 40 bytes falha igual — se falhar, não é tamanho de payload, é schema. Ferramentas só com parâmetros de texto (`execute_sql`, `apply_migration`) seguem funcionando, então dá para trabalhar no banco normalmente. |
+| **R9** | ⚠️ **O segredo compartilhado está em texto claro no fonte da Edge Function** (`index.ts`, linha 23) e em `tempo.config`. | Baixa gravidade — o fonte não é público e o que ele protege é a **cota da Open-Meteo**, não dados; a gravação é idempotente dentro da hora, então o estrago se limita a consumo de cota. O lugar convencional seria um secret do Supabase lido por `Deno.env.get()`. O conector do MCP não expõe gerenciamento de secrets, então exige o painel. Item para quando mexer nisso por outro motivo. |
+| **R13** | ⚠️ **O schema `tempo` cresceu além da projeção: 132 MB contra os ~71 MB previstos na §6**, e o banco compartilhado está em **302 MB de ~500** (medido em 2026-10-01, já com a verificação de horizonte longo). `tempo.previsao` custa 98 MB (a retenção de 10 dias funciona; o que errou foi o custo por linha) e `tempo.verificacao` 24 MB com 201 mil linhas — crescendo ~11 mil/dia contra retenção de 90 dias, ou seja, rumo a ~1 milhão de linhas e ~120 MB em regime. | Ainda cabe, mas a folga encolheu e o orçamento é **compartilhado com o PregadorAPP**. Medir de novo quando a `verificacao` atingir o regime de 90 dias (por volta de 2026-12). Alavancas, na ordem: encurtar a retenção da previsão de 10 para 7 dias (−30 MB), agregar `verificacao` antiga em resumo por grupo em vez de guardar par a par, e só então o armazenamento frio no Cloudflare R2 (§12). |
+
+---
+
+### Riscos encerrados
+
+Saíram da tabela acima em 2026-09-28 por estarem resolvidos — ficam registrados
+porque o motivo do encerramento é informação, e porque a numeração R8–R13 se
+apoia neles.
+
+| # | Risco | Desfecho |
+|---|---|---|
+| R1 | Projetos free do Supabase pausam por inatividade (~7 dias) | ✅ **Não ocorre.** Verificado na prática: o projeto roda sem interrupção desde 2026-09-10, com `pg_cron` de hora em hora e 204 mil verificações acumuladas. Nenhuma pausa, nenhum buraco na série. |
+| R4 | `file://` envia `Origin: null` | ✅ **Resolvido** pela hospedagem na Vercel, aceita pelo usuário em 2026-09-10. |
+| R5 | RADAR pode ser Power BI fechado, sem consumo legítimo | ✅ **Confirmado e absorvido** (D1, §8.3): é Power BI sem API e sequer publicado. O histórico mensal da ANEEL assumiu o papel de ground truth, e o painel linka o RADAR como consulta manual. |
+| R7 | Limite de 2 projetos ativos no plano free do Supabase | ✅ **Contornado** (D4): o TEMPO vive no schema `tempo` dentro do `PregadorAPP`, com `legno-lp` intocado. A premissa "coisas separadas" foi preservada por isolamento de schema, não de projeto. |
+
+---
+
+## 14. Decisões pendentes
+
+| # | Questão | Status |
+|---|---|---|
+| D1 | Inspecionar o painel RADAR | ✅ **Resolvida** (2026-09-10) — não é utilizável, ver §8.3 |
+| D2 | Alerta ativo por e-mail | ✅ **Resolvida** (2026-09-10) — **não agora**; gatilho construído e **desarmado** (`tempo.gatilho_alerta.ativo = false`) |
+| D3 | Nome e região do projeto Supabase | ✅ **Resolvida** — `tempo-rj`, `sa-east-1` |
+| D4 | Como liberar o 3º slot de projeto no Supabase | ✅ **Resolvida** — schema `tempo` dentro do `PregadorAPP`, `legno-lp` intocado |
+| D5 | Desligar a proteção de login da Vercel | ✅ **Resolvida em 2026-09-10.** O token do MCP nunca teve escopo para isso (403 persistente em 3 tentativas); feito pela UI, via automação do Chrome do usuário, a pedido dele. Site verificado público: `200 · text/html · 18.850 bytes`. |
+| **D7** | **CEMADEN — resolvida em 2026-09-11.** A conclusão anterior estava errada: `311_24.json` não é fatia arbitrária de mapa, é a **camada de pluviômetros automáticos** (nacional, com `estacao_uf`). E há endpoint melhor: `getJson2.php?uf=RJ`, JSON plano por UF, com janelas de 1h a 96h. Em produção: 64 municípios observados, 8 regiões verificadas. Ver §8.2. | ✅ **Resolvida** |
+| D8 | Histórico ERA5 × interrupções para treinar a camada 3 | ✅ **Resolvida em 2026-09-11** — ver §9.1 |
+| **D11** | **Driver de raio: CAPE.** ✅ **Resolvida em 2026-09-11** — CAPE entra como **terceiro driver**, não como substituto. Ver §9.6. | ✅ **Resolvida** |
+| **D10** | **Clientes sem energia, não chamados.** O dataset *Interrupções de Energia Elétrica nas Redes de Distribuição* (~270 MB/ano) traz **unidades consumidoras afetadas** por interrupção — que é o número que o usuário instintivamente procura ("1.822 clientes sem energia"). Seria a métrica de impacto de verdade. | 🟡 **Aberta** |
+| **D9** | **Ampliar a amostra da camada 3.** ✅ **Resolvida em 2026-09-11** — recalibrado com 2023+2024+2025+2026, **123.648 município-dia** contra 33.580. A faixa ≥70 km/h foi de **68 para 177 dias**. Ver §9.5. | ✅ **Resolvida** |
+| D6 | Achado de segurança **no PregadorAPP** (não é do TEMPO): `public.rls_auto_enable()` e `public.handle_new_user()` são `SECURITY DEFINER` e chamáveis pelo `anon` via `/rest/v1/rpc/`. Também há 2 tabelas com RLS sem policy e proteção de senha vazada desligada. | ⚠️ **Reportado, não corrigido** — é o outro projeto, decisão do usuário |
+
+---
+
+## 15. Registro de decisões tomadas
+
+| Data | Decisão |
+|---|---|
+| 2026-10-01 | **A verificação só media as próximas 6 horas** (migration 067). `tempo.verificar()` guardava, por hora, só a emissão mais recente — e como a coleta roda a cada 6 h, toda previsão verificada tinha menos de 6 h de antecedência. A faixa 24-72h estava parada desde 14/09 e a 72-120h nunca existiu: o painel mostrava 5 dias e sabia medir o primeiro. |
+| 2026-10-01 | **Faixas longas só em 8 pontos-sentinela, um por região.** Abrir as 4 faixas nos 92 municípios levaria `verificacao` a ~440 MB, contra o R13. Não perde poder: os grupos de skill já são regionais e a trava de 72 horas distintas existe porque município extra sob a mesma chuva não acrescenta evidência. Custo medido: +9 MB imediatos, ~+48 MB em regime. |
+| 2026-09-28 | **Alerta Rio descartado como fonte de vento** (decisão do usuário). Os dados existem em 8 estações, mas sem feed pública ao vivo — só arquivo histórico por formulário. Uma cidade, download manual, sem ciclo diário: não paga a manutenção. Ver §9.8. |
+| 2026-09-28 | **Agregador radarmeteorologico.com.br descartado.** O endpoint de temperaturas declara `"fonte": "Open-Meteo e MET Norway"` — não é observação do INMET. Verificar previsão do Open-Meteo contra o Open-Meteo mediria a concordância do sistema consigo mesmo. Só o endpoint de alertas é INMET de verdade, e alertas já temos. |
+| 2026-09-28 | **Dados horários do INMET exigem token.** A rota aberta `/estacao/{datas}/{cod}` responde **204 em silêncio** para toda estação e toda data; `/token/estacao/.../{chave}` responde `CHAVE INVÁLIDA!`. Nunca foi bloqueio de rede: `pg_net` do Supabase alcança o INMET normalmente — quem apanha é o `curl` desta máquina, por fingerprint de TLS. Token solicitado por e-mail em 2026-09-28. |
+| 2026-09-28 | **A calibração passou a ser mostrada** (migration 066). Era medida todo dia desde o início e nunca lida. Diz que o painel é otimista por ~2×: quando as 8 famílias concordam, chove em 43% das vezes. Ver §9.8. |
+| 2026-09-28 | **A fração de concordância tem skill de Brier NEGATIVO** (−18%) lida como probabilidade, e **+13%** lida pela tabela medida. A frequência observada é monotônica, então o painel ordena bem e só erra a escala. |
+| 2026-09-28 | **Tile de temperatura no topo**, e sem etiqueta de calor por limiar fixo: o alerta oficial sobrepõe (§5.3), e limiar meu que não dispara em GRANDE PERIGO vigente seria lido como "não há problema" (§5.8). |
+| 2026-09-28 | **Os pesos por skill entraram em vigor** — 9 de 24 grupos, 204.120 verificações. O gargalo foi sempre a trava de horas distintas, nunca a de amostras. Ver §9.7. |
+| 2026-09-28 | **`skill_grupos_ativos` contava linhas, não grupos.** O painel exibia "72 grupos" onde existem 24 no total, porque `tempo.skill` tem uma linha por (grupo × linhagem). Migration 065. Número certo sob rótulo errado é número errado. |
+| 2026-09-28 | **Riscos R1, R4, R5 e R7 encerrados** e movidos para tabela própria, com o desfecho registrado. R1 caiu por evidência: 18 dias de operação contínua sem pausa. |
+| 2026-09-28 | **R13 aberto: o armazenamento cresceu além da projeção.** 132 MB no schema contra ~71 MB previstos; 280 MB no banco compartilhado. A retenção funciona — errou o custo por linha. Alavancas listadas antes de precisar delas. |
+| 2026-09-15 | **Cartão de condição do tempo, com `cloud_cover`** (migration 063). Motivado por observação do usuário: só probabilidade de chuva deixa o dia bom preto, e preto se confunde com falha de coleta. Precedência: chuva manda no ícone, nuvem decide o resto. Ver §5.8 e §12.2. |
+| 2026-09-15 | **"0 de 8 concordam" dizia o oposto dos dados.** A barra conta quem vê chuva; em dia seco as oito concordam. A palavra *concordam* passou a ser reservada ao voto unânime. Ver §5.8. |
+| 2026-09-15 | **Monitor de aprendizado e desempenho** (migrations 062 e 064). Decisão de projeto: **mostrar a medição antes de ela valer, marcada como provisória**. E não coroar líder quando o período foi seco — "ainda empatados: todos acertam prevendo zero". |
+| 2026-09-15 | **Deploy de Edge Function passa a ser pela CLI do Supabase**, não pelo MCP. O R8 (schema degradado) não se resolve na sessão; a CLI lê o arquivo do disco e elimina a transcrição manual. |
+| 2026-09-15 | **Filtro hierárquico por região descartado depois de construído**, a pedido do usuário: exige saber a geografia antes de achar o município. Região e concessionária foram **promovidas a rótulo** — subtítulo no Top-5, resumo agregado no panorama — em vez de deletadas. Ver §12.2. |
+| 2026-09-15 | **Busca de município ignorando acento e caixa**, no lugar do `<select>` de 92 itens. `<datalist>` nativo foi descartado: não normaliza acento, que é justamente o caso difícil no RJ. |
+| 2026-09-12 | **Toda tabela de heatmap declara largura por `<colgroup>`.** Com `table-layout:fixed` o navegador tira a largura da **primeira linha**, que é o cabeçalho — regra posta no `<td>` do corpo é ignorada, e a coluna de data invadiu as células. |
+| 2026-09-12 | **`node --check` no bloco `<script>` extraído** vira o método padrão de validar o painel. Contagem de chaves provou-se não confiável; a primeira rodada do `node --check` pegou um `Identifier 'hoje' has already been declared` que teria quebrado a página inteira. |
+| 2026-09-11 | **CAPE entra como terceiro driver, não como substituto.** Medido: sozinho empata com a chuva, junto vence — correlação entre eles é só +0,33. O que destravou foi descobrir que a Open-Meteo arquiva previsões passadas, não só reanálise. Ver §9.6. |
+| 2026-09-11 | **`risco_energia` passa a ser servido por snapshot.** Recalcular 2,2 s a cada carregamento raspava o timeout de 3 s do anon; os dados mudam 4× por dia. Mesmo padrão do `tempo_status`. |
+| 2026-09-11 | **O impedimento da verificação de impacto era amnésia, não atraso.** `risco_energia` é view calculada na hora; nada guardava a previsão. Agora `impacto_snapshot()` congela diariamente por antecedência, e `impacto_pontuar()` produz Brier quando o lote chega. Ver §10.1. |
+| 2026-09-11 | **Base da camada 3 passa a ser por (município, ano).** O nível de chamados varia 23% entre 2023 e 2025; com base única essa tendência entraria como se fosse efeito do tempo. Coeficientes vêm de todos os anos, o nível vem só do ano completo mais recente. |
+| 2026-09-11 | **Schema da ANEEL não é estável entre anos.** 2026 mudou nomes de coluna e tipos. O script passou a detectar o layout em vez de assumir. |
+| 2026-09-11 | **A chance no pior cenário caiu de 44% para 32,5% com 3× mais amostra.** Ficou registrado que o número antigo era o otimista, não o novo o pessimista — é o tipo de correção que só aparece ampliando a base. |
+| 2026-09-11 | **Camada 3 v4: coeficiente vem do total observado, não do rótulo de causa.** O usuário apontou que as distribuidoras classificam errado; isso derruba o rótulo como medida de magnitude e explica o teto da v3. Ver §9.4. |
+| 2026-09-11 | **Escala 0–100 de gravidade descartada; probabilidade no lugar.** O modelo prevê o valor esperado e satura em 53/100 — ancorar 100 no p99 criaria topo inalcançável. "Chance de entrar nos 10% piores" é fixa, verificável por Brier e vai de 4,4% a 44%. |
+| 2026-09-11 | **Alvo continua sendo chamado, não interrupção distinta.** Interrupção seria fisicamente melhor, mas o id só existe em 27% dos chamados da Light contra 77% da Ampla. Viés de registro subcontaria a capital. |
+| 2026-09-11 | **Chuva diária agregada na ordem certa.** O cartão somava os p25/p75 horários para formar a faixa do dia — soma de quantis não é quantil da soma, e isso inflava a dispersão. Agora cada família fecha o total do dia primeiro. A linha cinza saiu; virou % de concordância, que se lê. |
+| 2026-09-11 | **Concordância só existe quando há volume para discordar.** Em dia seco a métrica subia a 88% dizendo apenas "concordam que não chove" — inflada onde menos informa. Abaixo de 1 mm o painel mostra quantas famílias veem chuva. |
+| 2026-09-11 | **Cartão "% do esperado para o mês" (ideia do usuário).** 30 mm não diz nada; "32% do que setembro inteiro traz" diz. Normal 1991–2020 do ERA5, escala fixa com barra cheia = o mês num dia só. |
+| 2026-09-11 | **Varredura semanal vigia, não recalibra.** Recalibrar exige 380 MB e regressão — não cabe em Edge Function nem no Postgres. O CKAN publica `last_modified`, então dá para saber que mudou sem baixar um byte. |
+| 2026-09-11 | **O painel parou de mentir sobre o próprio aprendizado.** O `tempo.status_snapshot` declarava `pesos_em_uso = true` e "8 grupos ativos" usando o critério antigo de 30 amostras — anunciando que o sistema já aprendera quando ele não aprendera. Passou a usar o mesmo piso duplo da `atualizar_skill`. Também passou a contar as duas redes (236 estações, união de Alerta Rio + CEMADEN) e a expor `municipios_observados`, em vez de reportar só a capital. |
+| 2026-09-11 | **Sobrecarga de função pega antes de quebrar o cron.** Ao dar um segundo parâmetro à `atualizar_skill`, ficaram duas versões coexistindo — e `select tempo.atualizar_skill()` sem argumentos viraria ambígua, falhando todo dia às 04:40 **em silêncio**, porque `pg_cron` não reclama para ninguém. A antiga foi removida na migration seguinte. Lição: `create or replace function` com assinatura diferente **não substitui, acumula**. |
+| 2026-09-11 | **CAPE publicado e confirmado em produção.** 644 de 736 linhas por emissão. Na primeira coleta apareceu o achado que importa: as linhagens discordam na **ordem de grandeza** (mediana ECMWF 460 J/kg contra 30 do GFS), porque cada centro define CAPE de um jeito e a Open-Meteo não normaliza. Limiar terá de ser por linhagem. Ver D11. |
+| 2026-09-11 | **Painel: cor = causa, palavra = gravidade.** Ver §5.6. Também corrigido o vazamento de `MODERADO` por baixo da barra — coluna fixa de 78px com conteúdo variável. |
+| 2026-09-11 | **Verificar renderizado, não só o diff.** Ao criar a legenda usei `class="legenda"`, que **já existia** para o mapa de calor; minha regra `display:grid` sequestrou a original `display:flex` e virou a fila de cores em coluna. Só apareceu ao abrir a página. Diff limpo não é página correta. |
+| 2026-09-11 | **Fuso verificado, não presumido.** `pg_cron` é UTC e não há o que ajustar; o que precisava estar em horário de Brasília — o agrupamento por dia civil na camada 3 e no CEMADEN — já estava, explicitamente. Ver §12. |
+| 2026-09-11 | **CEMADEN entra pelo `getJson2.php?uf=RJ`.** A verificação deixa de ser só da capital: 64 municípios, 8 regiões. O que estava errado antes era a conclusão, não a fonte — eu tinha julgado pelo arquivo `311_24.json` sem ver que ele é a camada de pluviômetros do país inteiro. |
+| 2026-09-11 | **Coletor do CEMADEN roda no Postgres (`pg_net`), não em Edge Function.** É um GET de JSON plano; não valia um segundo coletor. Diferente do caso do CAPE, onde duplicar o coletor multi-lote da Open-Meteo seria pior que esperar. |
+| 2026-09-11 | **Observação agregada em vetor de 24 horas por município/dia.** Formato longo custaria ~125 MB nos 120 dias de retenção; o vetor custa ~3 MB. Média, mediana e máxima guardadas juntas — observação não se recoleta. |
+| 2026-09-11 | **Piso de skill passa a exigir horas distintas, não só volume.** Com 64 municípios, 30 amostras podem ser 30 municípios *na mesma chuva* — uma observação repetida 30 vezes. Passou a exigir 72 horas civis distintas. Verificado no dado: 85 amostras vindas de 11 horas, que teriam definido peso sob a regra antiga. |
+| 2026-09-11 | **Alerta Rio tem prioridade sobre CEMADEN onde os dois cobrem.** Rede mais densa e nativa horária na capital. Uma observação por (ponto, hora) — duas inflariam a amostra do Brier. |
+| 2026-09-10 | Escopo inicial: Estado do RJ |
+| 2026-09-10 | Grid para calcular, município para comunicar — **revisado** para ~120 pontos representativos por causa do limite de 500 MB |
+| 2026-09-10 | Horizonte: nowcasting até 5 dias |
+| 2026-09-10 | Supabase como backend integral (banco + cron + coletor + proxy) |
+| 2026-09-10 | HTML como consumidor puro, sem lógica de coleta |
+| 2026-09-10 | Hospedagem gratuita aceita (não `file://`) |
+| 2026-09-10 | Botão "faltou luz aqui" como ground truth de impacto |
+| 2026-09-10 | Ordem de construção: chuva → energia → deslizamento |
+| 2026-09-10 | Deslizamento terceirizado ao CEMADEN — não reconstruir |
+| 2026-09-10 | Probabilidade sempre acompanhada de dispersão e nº de linhagens concordantes |
+| 2026-09-10 | **Projeto Supabase novo e dedicado. `legno-lp` não deve ser tocado.** |
+| 2026-09-10 | RADAR descartado como fonte — Power BI fechado, sem API, e sequer publicado |
+| 2026-09-10 | Alerta por e-mail: **não agora**, mas gatilho construído e desarmado |
+| 2026-09-10 | Schema escrito em `sql/001_schema.sql` — append-only, JSONB, RLS, retenção |
+| 2026-09-10 | Pontos **não** são chumbados à mão: seed vem do IBGE (UF 33) + geocodificação, para não fabricar coordenadas |
+| 2026-09-10 | TEMPO abrigado como schema `tempo` dentro do `PregadorAPP` (limite de 2 projetos free) |
+| 2026-09-10 | Cadência de coleta a cada 6 h — os modelos globais só rodam em 00/06/12/18 UTC; coletar mais seria duplicar dado e queimar orçamento |
+| 2026-09-10 | Probabilidade calculada por **família de modelo**, não por fonte — princípio 5.1 virou SQL |
+| 2026-09-10 | Pesos por skill deliberadamente **não** aplicados enquanto não houver verificação: sem evidência, sem preferência |
+| 2026-09-10 | Botão "faltou luz" **removido** a pedido do usuário; escrita pública fechada |
+| 2026-09-10 | Painel de interrupções da ANEEL existe e é linkado, mas fica como **consulta manual** (Power BI sem API) |
+| 2026-09-10 | Artifact descartado como hospedagem: o CSP dele bloqueia `fetch` para o Supabase. Hospedagem externa é exigência técnica, não preferência |
+| 2026-09-10 | **Supabase Edge Function descartada como hospedagem da página** — testado e falhou, ver abaixo |
+| 2026-09-10 | Observação: **mediana entre estações** como observado do ponto. A célula do modelo (13–25 km) é média de área; comparar com um pluviômetro só penalizaria o modelo injustamente |
+| 2026-09-10 | Verificação **só com horizonte estritamente positivo**. A API devolve as horas passadas do dia junto com a previsão — são análise, não previsão; verificar contra elas inflaria o skill |
+| 2026-09-10 | Alinhamento temporal: leitura do Alerta Rio arredondada para a hora mais próxima, porque a precipitação horária do Open-Meteo é a soma da hora **anterior** |
+| 2026-09-10 | Peso mínimo de **0,25** por linhagem: nunca silenciar um modelo por completo — ele pode ser o único a acertar o evento raro |
+| 2026-09-10 | Mínimo de **30 amostras** por grupo antes de qualquer peso sair de 1.0 |
+| 2026-09-10 | `tempo_status` **sem** `security_invoker`: expõe contagens agregadas sem dar acesso às linhas internas |
+| 2026-09-11 | Camada 3 usa o **maior** multiplicador entre chuva e vento, nunca o produto — não são causas independentes no mesmo temporal |
+| 2026-09-11 | Baseline por município = mediana em **dias calmos** (< 1 mm, < 30 km/h), não a média geral: a média já embute os dias de tempestade |
+| 2026-09-11 | `p90` viaja sempre junto da mediana nos limiares — esconder a dispersão na camada 3 seria o mesmo erro que §5.5 proíbe na camada 1 |
+| 2026-09-11 | Processamento pesado em **venv descartável** no diretório temporário; nada instalado no Python do usuário, 629 MB apagados ao final |
+
+### Hospedagem: alternativas testadas e descartadas
+
+| Alternativa | Resultado |
+|---|---|
+| **Artifact (claude.ai)** | ❌ CSP bloqueia `fetch`/XHR para hosts fora da allowlist. Não conseguiria falar com o Supabase. |
+| **Supabase Edge Function servindo o HTML** | ❌ **Testado em 2026-09-10.** A função responde 200 com os bytes certos, e cabeçalhos próprios passam (o `Cache-Control` chegou intacto), mas a plataforma **sobrescreve o `Content-Type` para `text/plain`** e injeta `X-Content-Type-Options: nosniff`. É política antiphishing do domínio compartilhado `*.supabase.co`. O navegador renderizaria como texto puro. Função `tempo-rj` ficou publicada porém inerte. |
+| **Cloudflare Workers/Pages** | ❌ O conector disponível só expõe ferramentas de leitura (`workers_list`, `workers_get_worker_code`). Não há como publicar por MCP. |
+| **Vercel** | ✅ **Em uso.** Deploy funciona pelo MCP; só a *Deployment Protection* exige um clique manual (D5). |
+
+---
+
+## 16. Fontes consultadas
+
+- [ANEEL — anúncio do RADAR](https://www.gov.br/aneel/pt-br/assuntos/noticias/2025/aneel-anuncia-o-lancamento-de-sistema-para-monitorar-interrupcoes-de-energia)
+- [ANEEL — Interrupções de Energia Elétrica nas Redes de Distribuição (dados abertos)](https://dadosabertos.aneel.gov.br/dataset/interrupcoes-de-energia-eletrica-nas-redes-de-distribuicao)
+- [Cenário Energia — detalhes do projeto RADAR](https://cenarioenergia.com.br/2025/11/19/aneel-avanca-no-projeto-radar-nova-plataforma-nacional-para-monitoramento-em-tempo-real-das-interrupcoes-de-energia/)
+- [ABRADEE — apresentação da ferramenta](https://abradee.org.br/aneel-apresenta-ferramenta-para-monitorar-quedas-de-energia/)
+- [Canal Solar](https://canalsolar.com.br/aneel-lanca-sistema-quedas-energia-tempo-real/)
+
+**Observação meteorológica (levantadas e testadas em 2026-09-11):**
+
+- CEMADEN — dados por UF, em uso: `https://resources.cemaden.gov.br/graficos/interativo/getJson2.php?uf=RJ`
+- CEMADEN — camada nacional de pluviômetros automáticos (JSONP, 2,1 MB): `https://resources.cemaden.gov.br/dados/311_24.json`
+- CEMADEN — mapa interativo, de onde saíram os endpoints: `https://mapainterativo.cemaden.gov.br/`
+- CEMADEN — download histórico mensal: `mapainterativo.cemaden.gov.br/download/download_form.php` — ⛔ **tem CAPTCHA e é arquivo mensal**; não serve para coleta automática e não deve ser contornado.
+- INMET — lista de estações (funciona): `https://apitempo.inmet.gov.br/estacoes/T` — 26 automáticas operantes no RJ, com coordenadas.
+- INMET — dados de estação: `https://apitempo.inmet.gov.br/estacao/{ini}/{fim}/{cod}` — ⛔ **204 sem conteúdo em toda data testada** (2024 a 2026). A rota existe, as vizinhas dão 404 e `/token/estacao/.../{token}` responde 200: **os dados foram fechados atrás de token**. É o caminho para cobrir os 28 municípios sem CEMADEN, vários dos quais têm estação INMET (Macaé, Cabo Frio, Carmo, Arraial do Cabo, Silva Jardim, Paty do Alferes).
+
+*(Disponibilidade, formato e termos de uso de cada fonte de dados serão
+confirmados no momento da implementação — não assumidos de memória.)*
