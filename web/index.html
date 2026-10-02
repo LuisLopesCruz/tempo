@@ -203,12 +203,23 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 .sev-perigo .ic{color:var(--serious)}
 .sev-grande_perigo .ic{color:var(--critical)}
 .sev-observacao .ic{color:var(--ink-muted)}
-.alerta .agora{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.06em;
-  text-transform:uppercase;padding:1px 5px;border-radius:4px;margin-left:6px;
-  background:var(--critical);color:#fff;vertical-align:1px}
-.alerta .depois{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.06em;
-  text-transform:uppercase;padding:1px 5px;border-radius:4px;margin-left:6px;
-  background:var(--grid);color:var(--ink-2);vertical-align:1px}
+/* Selos de tempo do alerta. A COR E A GRAVIDADE — antes o "em vigor agora"
+   era vermelho fixo, o que punha selo de maxima gravidade num aviso de PERIGO
+   enquanto o GRANDE PERIGO ao lado ficava cinza: a cor dizia o contrario do
+   dado. Agora segue a mesma rampa do icone (amarelo, laranja, vermelho).
+
+   E o que separa "agora" de "a seguir" deixa de ser cor e passa a ser
+   intensidade: cheio vale agora, esmaecido ainda vem. Um canal por dimensao
+   (5.6) — matiz para gravidade, forca para tempo. */
+.alerta .agora, .alerta .depois{display:inline-block;font-size:9.5px;font-weight:700;
+  letter-spacing:.06em;text-transform:uppercase;padding:1px 5px;border-radius:4px;
+  margin-left:6px;vertical-align:1px;background:var(--ink-muted);color:#fff}
+.alerta .depois{opacity:.45}
+/* Texto escuro sobre amarelo e laranja: branco ali e ilegivel. */
+.sev-perigo_potencial .agora, .sev-perigo_potencial .depois{background:var(--warning);color:#2b2000}
+.sev-perigo .agora, .sev-perigo .depois{background:var(--serious);color:#2b1200}
+.sev-grande_perigo .agora, .sev-grande_perigo .depois{background:var(--critical);color:#fff}
+.sev-observacao .agora, .sev-observacao .depois{background:var(--ink-muted);color:#fff}
 #maisAlertas{margin-top:10px;font-size:12.5px;padding:6px 10px}
 .selo{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.04em;
   text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid var(--ring);
