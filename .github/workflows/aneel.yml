@@ -39,6 +39,5 @@ jobs:
         env:
           TEMPO_SUPABASE_URL: https://hmwevcpcelmwnonbeojy.supabase.co
           TEMPO_ANON_KEY: ${{ secrets.TEMPO_ANON_KEY }}
-          TEMPO_FUNCOES_URL: ${{ secrets.TEMPO_FUNCOES_URL }}
-          TEMPO_SEGREDO: ${{ secrets.TEMPO_SEGREDO }}
+          TEMPO_INGESTAO_SEGREDO: ${{ secrets.TEMPO_INGESTAO_SEGREDO }}
         run: python calibracao/8_sincronizar_aneel.py

@@ -2,7 +2,7 @@
 """PASSO 8 — sincroniza o observado da ANEEL. Roda sozinho, todo dia.
 
 Chamado por .github/workflows/aneel.yml. Nao e para rodar a mao, embora rode:
-basta exportar TEMPO_FUNCOES_URL e TEMPO_SEGREDO.
+basta exportar TEMPO_ANON_KEY e TEMPO_INGESTAO_SEGREDO.
 
 A IDEIA
   O parquet da ANEEL tem ~195 MB e so muda uma vez por mes. Baixar todo dia
@@ -20,9 +20,13 @@ POR QUE SO DUAS COLUNAS
   32 dos 34 cobrem o Brasil inteiro, o arquivo nao e ordenado por municipio.
 
 O QUE ELE NAO FAZ
-  Nao decide o que e dia valido para verificacao. Manda tudo e deixa o servidor
+  Nao decide o que e dia valido para verificacao. Manda e deixa o servidor
   filtrar: so entra dia que ja tinha previsao congelada (regra da 10.1, que
   precisa morar onde nao da para burlar).
+
+  Nao fala com Edge Function nenhuma: chama a funcao do banco direto pelo
+  PostgREST, com a anon key e um segredo proprio desta porta. Uma chamada, dois
+  secrets no GitHub, zero deploy.
 """
 import io, os, json, sys, time, urllib.request
 
@@ -32,8 +36,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 SUPA = os.environ.get("TEMPO_SUPABASE_URL", "https://hmwevcpcelmwnonbeojy.supabase.co")
 ANON = os.environ.get("TEMPO_ANON_KEY", "")
-FUNCOES = os.environ.get("TEMPO_FUNCOES_URL", "")
-SEGREDO = os.environ.get("TEMPO_SEGREDO", "")
+SEGREDO = os.environ.get("TEMPO_INGESTAO_SEGREDO", "")
 
 
 def buscar(url, dados=None, **cab):
@@ -75,18 +78,29 @@ def estado_do_banco():
 
 
 def maior_mes(md, nomes):
+    """Mes de competencia mais alto do arquivo.
+
+    ATENCAO: a coluna vem como TEXTO. Comparar sem converter daria "9" > "12",
+    e o robo pararia de reconhecer outubro em diante — falha silenciosa, no fim
+    do ano, quando ninguem estaria olhando.
+    """
     i = nomes.index("NumMesCompetencia")
     mx = None
     for g in range(md.num_row_groups):
         st = md.row_group(g).column(i).statistics
-        if st and st.has_min_max:
-            mx = st.max if mx is None or st.max > mx else mx
+        if not (st and st.has_min_max):
+            continue
+        try:
+            v = int(st.max)
+        except (TypeError, ValueError):
+            continue
+        mx = v if mx is None or v > mx else mx
     return mx
 
 
 def main():
-    if not (FUNCOES and SEGREDO and ANON):
-        sys.exit("faltam TEMPO_FUNCOES_URL, TEMPO_SEGREDO ou TEMPO_ANON_KEY")
+    if not (SEGREDO and ANON):
+        sys.exit("faltam TEMPO_ANON_KEY ou TEMPO_INGESTAO_SEGREDO")
 
     est = estado_do_banco()
     print("banco: observado ate %s | previsao congelada de %s a %s | pares %s"
@@ -141,11 +155,15 @@ def main():
     if not len(g):
         print("nada no periodo com previsao congelada."); return
 
-    corpo = json.dumps({"rows": [{"ibge": int(r.ibge), "dia": str(r.dia),
-                                  "chamados": int(r.chamados)} for r in g.itertuples()]}).encode()
-    r = buscar(FUNCOES.rstrip("/") + "/tempo-ingerir-observado", dados=corpo,
-               **{"Content-Type": "application/json", "x-tempo-secret": SEGREDO})
-    print("resposta:", r.read().decode()[:600])
+    linhas = [{"ibge": int(r.ibge), "dia": str(r.dia), "chamados": int(r.chamados)}
+              for r in g.itertuples()]
+    LOTE = 5000          # um ano inteiro passa de 30 mil linhas; nao vai num JSON so
+    for i in range(0, len(linhas), LOTE):
+        corpo = json.dumps({"p_segredo": SEGREDO, "p_rows": linhas[i:i + LOTE]}).encode()
+        r = buscar(SUPA + "/rest/v1/rpc/tempo_ingerir_observado", dados=corpo,
+                   apikey=ANON, Authorization="Bearer " + ANON,
+                   **{"Content-Type": "application/json"})
+        print("lote %d: %s" % (i // LOTE + 1, r.read().decode()[:300]))
 
 
 if __name__ == "__main__":
