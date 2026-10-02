@@ -1084,6 +1084,42 @@ Lição, que é a mesma de sempre neste projeto: **o número certo sob o rótulo
 errado é um número errado.** Só apareceu porque a trava disparou e alguém foi
 ler a frase inteira.
 
+### O ranking depende do horizonte (2026-10-02)
+
+Primeiro fruto da migration 067: com as faixas longas medindo, dá para comparar
+as linhagens **por antecedência**. MAE em mm/h, ponderado por amostras.
+
+| Família | 0-6h | 6-24h | 24-72h |
+|---|---|---|---|
+| **DWD ICON** | **0,282** | **0,354** | **0,569** |
+| NOAA GFS | 0,308 | 0,362 | 0,619 |
+| ECMWF IFS | 0,313 | 0,414 | 0,689 |
+| Météo-France ARPEGE | 0,317 | **0,464** ↓ | 0,657 |
+| CMA GRAPES | 0,332 | 0,426 | 0,633 |
+| JMA GSM | 0,342 | 0,525 | 0,795 |
+| UK Met Office | 0,353 | **0,386** ↑ | 0,658 |
+| CMC GEM | 0,433 | 0,432 | **0,967** |
+
+Três leituras:
+
+**O ICON lidera em todas as faixas.** Não é artefato de uma janela curta — a
+vantagem sobrevive de 6 horas a 3 dias.
+
+**O ARPEGE desaba com a antecedência.** É 4º em 0-6h e 7º em 6-24h. Coerente
+com a física: o ARPEGE é modelo de curto prazo e área limitada, e perde valor
+justamente onde o global manda. O inverso acontece com o UKMO, que sobe de 7º
+para 3º. Nenhum dos dois efeitos era visível com uma faixa só, e os dois são
+argumento direto a favor de pesar **por grupo (região × horizonte)** em vez de
+um peso único por modelo — decisão tomada em 2026-09-10 por princípio, agora
+confirmada por medida.
+
+**O erro dobra de 0-6h para 24-72h** (0,282 → 0,569 no ICON). Dimensiona quanto
+vale a pena confiar no quarto e no quinto dia do painel.
+
+⚠️ A coluna de 24-72h repousa em ~150 amostras por grupo, contra 8.290 em
+0-6h. É indicativa, não firme. A de 72-120h ainda não ativou: 27 das 72 horas,
+crescendo ~12 h/dia.
+
 ### O que isto ainda não é
 
 Peso medido é a camada 1 (chuva). A camada 3 (impacto elétrico) continua
@@ -1538,6 +1574,7 @@ apoia neles.
 
 | Data | Decisão |
 |---|---|
+| 2026-10-02 | **Medido: o ranking das linhagens depende do horizonte.** ARPEGE cai de 4º para 7º entre 0-6h e 6-24h; UKMO sobe de 7º para 3º; ICON lidera em todas. Confirma por medida a decisão de pesar por (região × horizonte), que até aqui era princípio. Ver §9.7. |
 | 2026-10-02 | **O projeto passou a ter repositório:** `LuisLopesCruz/tempo`, privado. Entram painel, Edge Functions, schema, coeficientes, procedimento de calibração e este documento — 20 arquivos, 310 KB. Ficam de fora os ~328 MB de ERA5/CAPE, rebaixáveis pelos scripts. Privado por causa do R9: o segredo do coletor está em texto claro no código e **agora está no histórico** — o conserto é rotacionar, não remover, porque histórico de git não esquece. |
 | 2026-10-02 | **Commit a cada alteração, por pedido do usuário.** Repositório atualizado só quando alguém lembra envelhece em silêncio e passa a mentir sobre o estado do sistema — pior do que não ter. Migração no Supabase não gera arquivo: registra-se a decisão aqui e commita-se o registro. |
 | 2026-10-01 | **A verificação só media as próximas 6 horas** (migration 067). `tempo.verificar()` guardava, por hora, só a emissão mais recente — e como a coleta roda a cada 6 h, toda previsão verificada tinha menos de 6 h de antecedência. A faixa 24-72h estava parada desde 14/09 e a 72-120h nunca existiu: o painel mostrava 5 dias e sabia medir o primeiro. |
