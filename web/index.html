@@ -112,7 +112,10 @@ button.ghost{background:transparent}
 h2{font-size:13px;font-weight:620;margin:0 0 3px;letter-spacing:.01em}
 .hint{font-size:12px;color:var(--ink-muted);margin:0 0 14px}
 .hm{overflow-x:auto}
-.hm table{border-collapse:separate;border-spacing:3px;min-width:660px;
+/* min-width sobe de 660 para 860: com as 24 horas rotuladas, 660 px dava
+   ~24 px por coluna e os numeros de dois digitos encostavam um no outro.
+   No celular a tabela rola na horizontal, como ja rolava antes. */
+.hm table{border-collapse:separate;border-spacing:3px;min-width:860px;
   width:100%;table-layout:fixed}
 .hm th{font-size:10px;font-weight:500;color:var(--ink-muted);padding:0;text-align:center;font-variant-numeric:tabular-nums}
 .hm col.cday{width:88px}
@@ -810,7 +813,7 @@ function renderTempo(linhas){
   }
   let html = '<table><colgroup><col class="cday"><col span="24"></colgroup>' +
              "<thead><tr><th></th>";
-  for (let h = 0; h < 24; h++) html += "<th>" + (h % 3 === 0 ? dd(h) : "") + "</th>";
+  for (let h = 0; h < 24; h++) html += "<th>" + dd(h) + "</th>";
   html += "</tr></thead><tbody>";
   for (const par of Array.from(porDia.entries()).slice(0, 6)){
     const dt = new Date(par[0] + "T12:00:00");
@@ -857,7 +860,7 @@ function renderHeatmap(linhas){
   }
   let html = '<table><colgroup><col class="cday"><col span="24"></colgroup>' +
              "<thead><tr><th></th>";
-  for (let h = 0; h < 24; h++) html += "<th>" + (h % 3 === 0 ? dd(h) : "") + "</th>";
+  for (let h = 0; h < 24; h++) html += "<th>" + dd(h) + "</th>";
   html += "</tr></thead><tbody>";
   for (const par of Array.from(porDia.entries()).slice(0, 6)){
     const dt = new Date(par[0] + "T12:00:00");
