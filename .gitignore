@@ -21,3 +21,6 @@ Thumbs.db
 
 # Permissoes locais desta maquina, nao do projeto
 .claude/settings.local.json
+
+# Segredo em transito, para copiar para os paineis. Nunca versionar.
+SEGREDO-NOVO.txt

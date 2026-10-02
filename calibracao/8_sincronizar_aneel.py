@@ -1,0 +1,152 @@
+# -*- coding: utf-8 -*-
+"""PASSO 8 — sincroniza o observado da ANEEL. Roda sozinho, todo dia.
+
+Chamado por .github/workflows/aneel.yml. Nao e para rodar a mao, embora rode:
+basta exportar TEMPO_FUNCOES_URL e TEMPO_SEGREDO.
+
+A IDEIA
+  O parquet da ANEEL tem ~195 MB e so muda uma vez por mes. Baixar todo dia
+  seria desperdicio; nao olhar seria esperar para sempre (foi o que aconteceu
+  entre 11/09 e 02/10/2026, com 25 dias congelados e zero conferidos).
+
+  Entao: 29 dias por mes isto custa **149 KB** — o rodape do parquet, lido por
+  HTTP Range, que diz ate que mes de competencia o arquivo vai. So quando esse
+  mes alcanca algum dia com previsao congelada e que vale baixar as duas
+  colunas que importam (~54 MB, ~4 min) e mandar a contagem para o banco.
+
+POR QUE SO DUAS COLUNAS
+  Parquet e colunar. CodMunicipioIBGE + DthIniOcorrencia sao 12,3% do arquivo.
+  Medido em 2026-10-02: 54 MB contra 195. Pular row groups sem RJ nao ajuda —
+  32 dos 34 cobrem o Brasil inteiro, o arquivo nao e ordenado por municipio.
+
+O QUE ELE NAO FAZ
+  Nao decide o que e dia valido para verificacao. Manda tudo e deixa o servidor
+  filtrar: so entra dia que ja tinha previsao congelada (regra da 10.1, que
+  precisa morar onde nao da para burlar).
+"""
+import io, os, json, sys, time, urllib.request
+
+PACOTE = "ced06b4c-45a5-4cae-8a7e-f576ffc3b412"   # ocorrencias-emergenciais (NAO e o das interrupcoes)
+CKAN = "https://dadosabertos.aneel.gov.br/api/3/action/package_show?id=" + PACOTE
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+
+SUPA = os.environ.get("TEMPO_SUPABASE_URL", "https://hmwevcpcelmwnonbeojy.supabase.co")
+ANON = os.environ.get("TEMPO_ANON_KEY", "")
+FUNCOES = os.environ.get("TEMPO_FUNCOES_URL", "")
+SEGREDO = os.environ.get("TEMPO_SEGREDO", "")
+
+
+def buscar(url, dados=None, **cab):
+    cab.setdefault("User-Agent", UA)
+    req = urllib.request.Request(url, data=dados, headers=cab)
+    return urllib.request.urlopen(req, timeout=180)
+
+
+class ArquivoRemoto(io.RawIOBase):
+    """File-like sobre HTTP Range: o pyarrow pede so o que precisa."""
+
+    def __init__(self, url, tamanho):
+        self.url, self.tamanho, self.pos, self.baixado = url, tamanho, 0, 0
+
+    def readable(self):  return True
+    def seekable(self):  return True
+    def tell(self):      return self.pos
+
+    def seek(self, pos, whence=0):
+        self.pos = pos if whence == 0 else (self.pos + pos if whence == 1 else self.tamanho + pos)
+        return self.pos
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self.tamanho - self.pos
+        if n == 0:
+            return b""
+        fim = min(self.pos + n, self.tamanho) - 1
+        dados = buscar(self.url, Range="bytes=%d-%d" % (self.pos, fim)).read()
+        self.pos += len(dados)
+        self.baixado += len(dados)
+        return dados
+
+
+def estado_do_banco():
+    r = buscar(SUPA + "/rest/v1/tempo_aneel_estado?select=*",
+               apikey=ANON, Authorization="Bearer " + ANON)
+    return json.load(r)[0]
+
+
+def maior_mes(md, nomes):
+    i = nomes.index("NumMesCompetencia")
+    mx = None
+    for g in range(md.num_row_groups):
+        st = md.row_group(g).column(i).statistics
+        if st and st.has_min_max:
+            mx = st.max if mx is None or st.max > mx else mx
+    return mx
+
+
+def main():
+    if not (FUNCOES and SEGREDO and ANON):
+        sys.exit("faltam TEMPO_FUNCOES_URL, TEMPO_SEGREDO ou TEMPO_ANON_KEY")
+
+    est = estado_do_banco()
+    print("banco: observado ate %s | previsao congelada de %s a %s | pares %s"
+          % (est["observado_ate"], est["previsto_de"], est["previsto_ate"], est["pares_verificados"]))
+    if not est["previsto_de"]:
+        print("nada congelado ainda: nada a conferir."); return
+
+    # mes que precisamos que o arquivo alcance
+    falta_de = est["observado_ate"] or est["previsto_de"]
+    ano_alvo, mes_alvo = int(falta_de[:4]), int(falta_de[5:7])
+
+    pacote = json.load(buscar(CKAN))["result"]
+    alvo = next((r for r in pacote["resources"]
+                 if (r.get("format") or "").upper() == "PARQUET"
+                 and str(ano_alvo) in (r.get("name") or "")), None)
+    if alvo is None:
+        sys.exit("nao achei o parquet de %d" % ano_alvo)
+
+    tamanho = int(buscar(alvo["url"]).headers["Content-Length"])
+    import pyarrow.parquet as pq
+    f = ArquivoRemoto(alvo["url"], tamanho)
+    pf = pq.ParquetFile(f)
+    md = pf.metadata
+    nomes = [md.schema.column(i).name for i in range(md.num_columns)]
+    mes = maior_mes(md, nomes)
+    print("parquet %s publicado em %s, cobre ate o mes %s (rodape: %.0f KB)"
+          % (ano_alvo, alvo["last_modified"][:10], mes, f.baixado / 1024))
+
+    if mes is None or mes < mes_alvo:
+        print("ainda nao alcanca o mes %d. Nada a fazer — custou %.0f KB."
+              % (mes_alvo, f.baixado / 1024))
+        return
+
+    print("alcancou. Baixando as 2 colunas...")
+    t0 = time.time()
+    tab = pf.read(columns=["CodMunicipioIBGE", "DthIniOcorrencia"])
+
+    import pandas as pd
+    d = tab.to_pandas()
+    d["ibge"] = pd.to_numeric(d.CodMunicipioIBGE, errors="coerce")
+    d = d[(d.ibge >= 3300000) & (d.ibge < 3400000)]          # so o RJ
+    d["dia"] = pd.to_datetime(d.DthIniOcorrencia, errors="coerce").dt.date
+    d = d.dropna(subset=["ibge", "dia"])
+    # Corte pelo que interessa: o servidor so aceita dia com previsao congelada,
+    # mas mandar o ano inteiro seria megabytes de JSON a toa.
+    de = pd.to_datetime(est["previsto_de"]).date()
+    d = d[d.dia >= de]
+    g = d.groupby(["ibge", "dia"]).size().reset_index(name="chamados")
+    print("%s municipio-dia do RJ, de %s a %s (%.0f MB, %.0f s)"
+          % (f"{len(g):,}", g.dia.min(), g.dia.max(), f.baixado / 1e6, time.time() - t0))
+
+    if not len(g):
+        print("nada no periodo com previsao congelada."); return
+
+    corpo = json.dumps({"rows": [{"ibge": int(r.ibge), "dia": str(r.dia),
+                                  "chamados": int(r.chamados)} for r in g.itertuples()]}).encode()
+    r = buscar(FUNCOES.rstrip("/") + "/tempo-ingerir-observado", dados=corpo,
+               **{"Content-Type": "application/json", "x-tempo-secret": SEGREDO})
+    print("resposta:", r.read().decode()[:600])
+
+
+if __name__ == "__main__":
+    main()

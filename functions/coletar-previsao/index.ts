@@ -15,11 +15,11 @@ const FORECAST_DAYS = 5;
 const CHUNK = 20;          // pontos por requisição
 const PAUSA_MS = 400;      // gentileza com a API gratuita
 
-// Segredo compartilhado com pg_cron (tempo.config). Fica apenas no servidor:
-// nunca e enviado ao navegador. Evita depender da service_role key, que o
-// MCP nao expoe, e impede que a URL publica da funcao seja acionada por
-// terceiros (protegendo a cota da API gratuita da Open-Meteo).
-const SEGREDO = "tUfLMsTl9pzXDzUX8G_LnnV6MLMxNIoAww_bXdB67vU";
+// O valor vive num secret do Supabase, nao aqui: ate 2026-10-02 ficava em
+// texto claro neste arquivo (risco R9), o que com o repositorio criado passou a
+// significar segredo no historico do git — que nao se apaga. Rotacionado na
+// mesma data; o valor antigo, que ficou no historico, nao serve mais.
+const SEGREDO = Deno.env.get("TEMPO_SEGREDO");
 
 // variável Open-Meteo -> chave curta no JSONB (economia de bytes)
 const VARS: Record<string, string> = {
@@ -51,6 +51,11 @@ type Linhagem = { id: number; om: string; slug: string };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 Deno.serve(async (req: Request) => {
+  if (!SEGREDO) {
+    return new Response(JSON.stringify({ erro: "TEMPO_SEGREDO nao configurado" }), {
+      status: 500, headers: { "Content-Type": "application/json" },
+    });
+  }
   if (req.headers.get("x-tempo-secret") !== SEGREDO) {
     return new Response(JSON.stringify({ erro: "nao autorizado" }), {
       status: 401, headers: { "Content-Type": "application/json" },
