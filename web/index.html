@@ -1050,11 +1050,19 @@ async function carregarAlertas(ibge){
   const card = $("#cardAlertas");
   try {
     const av = await api("/tempo_alertas_municipio?municipio_ibge=eq." + ibge +
-      "&select=severidade,evento,inicio,fim,descricao,riscos&order=severidade.desc,inicio.asc");
+      "&select=severidade,evento,inicio,fim,descricao,riscos,severidade_fonte,cor_fonte" +
+      "&order=severidade.desc,inicio.asc");
     if (!av.length){ card.hidden = true; return; }
     // ordena por gravidade real, nao alfabetica
     const peso = { grande_perigo: 3, perigo: 2, perigo_potencial: 1, observacao: 0 };
-    av.sort((x, y) => (peso[y.severidade] || 0) - (peso[x.severidade] || 0));
+    // Gravidade fora do mapa vai para o TOPO (3.5), nunca para o fim. O INMET
+    // publica 3 niveis hoje, com ids 6/7/8 — a numeracao comecando em 6 diz
+    // que a tabela deles tem outros. Se aparecer um 9, pode ser mais grave que
+    // 'grande perigo', e enterra-lo no fim da lista seria o pior erro possivel
+    // num cartao de alerta. Ordenar alto e um palpite; ordenar baixo tambem —
+    // e dos dois palpites, este falha do lado seguro.
+    const grau = (a) => (a.severidade in peso) ? peso[a.severidade] : 3.5;
+    av.sort((x, y) => grau(y) - grau(x));
 
     // Em dia carregado o INMET emite 7, 8 avisos e o cartao empurrava a
     // previsao inteira para baixo da tela. As duas linhas que ficam a vista
@@ -1089,12 +1097,24 @@ async function carregarAlertas(ibge){
         const r = JSON.parse(a.riscos);
         riscos = Array.isArray(r) ? r.join(" ") : String(r || "");
       } catch (e) { riscos = a.riscos || ""; }
+      // Para um nivel que nao conhecemos, quem manda e a fonte: a palavra e a
+      // cor que o proprio INMET publicou. Melhor exibir o rotulo deles do que
+      // inventar um nosso ou mostrar cinza, que leria como "brando".
+      const conhecida = a.severidade in ROTULO;
+      const rotulo = conhecida ? ROTULO[a.severidade]
+                               : (a.severidade_fonte || a.severidade || "gravidade nova");
+      const estilo = (!conhecida && a.cor_fonte)
+        ? ' style="border-color:' + a.cor_fonte + ';color:' + a.cor_fonte + '"' : '';
+      const estiloSelo = (!conhecida && a.cor_fonte)
+        ? ' style="background:' + a.cor_fonte + ';color:#1a1a1a"' : '';
       return '<div class="alerta sev-' + a.severidade + '">' +
-        '<div class="ic">' + (ICONE[a.severidade] || "●") + '</div>' +
+        '<div class="ic"' + ((!conhecida && a.cor_fonte) ? ' style="color:' + a.cor_fonte + '"' : '') +
+          '>' + (ICONE[a.severidade] || "▲") + '</div>' +
         '<div><div class="tt">' + (a.descricao || a.evento) +
-          '<span class="selo">' + (ROTULO[a.severidade] || a.severidade) + '</span>' +
-          (a === vigente ? '<span class="agora">em vigor agora</span>'
-                         : (a === vindo ? '<span class="depois">a seguir</span>' : '')) + '</div>' +
+          '<span class="selo"' + estilo + '>' + rotulo + '</span>' +
+          (a === vigente ? '<span class="agora"' + estiloSelo + '>em vigor agora</span>'
+                         : (a === vindo ? '<span class="depois"' + estiloSelo + '>a seguir</span>' : '')) +
+          '</div>' +
         '<div class="qd">' + fmtQuando(a.inicio, a.fim) + '</div>' +
         (riscos ? '<div class="rk">' + riscos.slice(0, 320) + '</div>' : '') +
         '</div></div>';
