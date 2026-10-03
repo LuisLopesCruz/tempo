@@ -206,6 +206,19 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 .sev-perigo .ic{color:var(--serious)}
 .sev-grande_perigo .ic{color:var(--critical)}
 .sev-observacao .ic{color:var(--ink-muted)}
+/* Risco da Defesa Civil reusa .alerta inteiro e so acrescenta a cor. Entra na
+   MESMA rampa do INMET de proposito: duas escalas de cor no mesmo cartao
+   obrigariam o leitor a lembrar qual e qual. Nivel nao mapeado cai no mais
+   grave, nao no mais brando — mesma licao da severidade do INMET. */
+.dc-moderado .ic{color:var(--warning)}
+.dc-alto .ic{color:var(--serious)}
+.dc-muito_alto .ic, .dc-desconhecido .ic{color:var(--critical)}
+.dc-moderado .selo{border-color:var(--warning);color:var(--warning)}
+.dc-alto .selo{border-color:var(--serious);color:var(--serious)}
+.dc-muito_alto .selo, .dc-desconhecido .selo{border-color:var(--critical);color:var(--critical)}
+/* Separa visualmente a fonte sem inventar uma segunda escala de cor. */
+.rdc{border-bottom:1px solid var(--grid);margin-bottom:2px}
+.rdc .fonte{font-size:11.5px;color:var(--ink-muted)}
 /* Selos de tempo do alerta. A COR E A GRAVIDADE — antes o "em vigor agora"
    era vermelho fixo, o que punha selo de maxima gravidade num aviso de PERIGO
    enquanto o GRANDE PERIGO ao lado ficava cinza: a cor dizia o contrario do
@@ -328,8 +341,9 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 
   <div class="card" id="cardAlertas" hidden>
     <h2>Alertas oficiais vigentes</h2>
-    <p class="hint">Emitidos pelo INMET. N&atilde;o entram no c&aacute;lculo da probabilidade &mdash;
-      &oacute;rg&atilde;o oficial <b>sobrep&otilde;e</b> a previs&atilde;o, n&atilde;o vota nela.</p>
+    <p class="hint">Do INMET e da Defesa Civil do RJ. N&atilde;o entram no c&aacute;lculo da
+      probabilidade &mdash; &oacute;rg&atilde;o oficial <b>sobrep&otilde;e</b> a previs&atilde;o,
+      n&atilde;o vota nela.</p>
     <div class="legal">
       <b><i style="background:var(--ink-muted)"></i>Observa&ccedil;&atilde;o</b>
       <b><i style="background:var(--warning)"></i>Perigo potencial</b>
@@ -339,6 +353,7 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
       <b><span class="amostra">cheio</span>em vigor agora</b>
       <b><span class="amostra fraca">esmaecido</span>a seguir</b>
     </div>
+    <div id="riscoDC"></div>
     <div id="alertas"></div>
     <div id="alertasResto" hidden></div>
     <button class="ghost" id="maisAlertas" type="button" aria-expanded="false" hidden></button>
@@ -1049,13 +1064,56 @@ function fmtQuando(ini, fim){
   return b ? f(a) + " até " + f(b) : "a partir de " + f(a);
 }
 
+// Rotulos da Defesa Civil. BAIXO e MODERADO nao aparecem: hoje 84 dos 92
+// municipios estao em MODERADO no hidrologico, e pintar quase todo o estado
+// todo dia ensina o leitor a ignorar a cor. So entra o que e excecao.
+const DC_ROTULO = { geologico: "Risco de deslizamento", hidrologico: "Risco hidrol\u00f3gico" };
+const DC_OCULTA = { baixo: 1, moderado: 1 };
+
+function linhaRisco(dc){
+  // Nivel desconhecido NAO e ocultado: se a Defesa Civil criar um nivel novo,
+  // ele aparece em vermelho em vez de sumir. Falhar do lado seguro.
+  const mostra = (dc || []).filter((d) => !(d.nivel in DC_OCULTA));
+  if (!mostra.length) return "";
+  mostra.sort((a, b) => (b.prioridade || 0) - (a.prioridade || 0));
+  return '<div class="rdc">' + mostra.map((d) => {
+    const t = new Date(d.atualizado_fonte);
+    const hm = dd(t.getHours()) + "h" + dd(t.getMinutes());
+    return '<div class="alerta dc-' + d.nivel + '">' +
+      '<div class="ic">\u25b2</div>' +
+      '<div><div class="tt">' + (DC_ROTULO[d.tipo] || d.tipo) +
+        '<span class="selo">' + (d.nivel_fonte || d.nivel) + '</span></div>' +
+      '<div class="qd"><span class="fonte">Defesa Civil do RJ</span> \u00b7 atualizado ' +
+        hm + '</div>' +
+      '</div></div>';
+  }).join("") + '</div>';
+}
+
 async function carregarAlertas(ibge){
   const card = $("#cardAlertas");
   try {
-    const av = await api("/tempo_alertas_municipio?municipio_ibge=eq." + ibge +
-      "&select=severidade,evento,inicio,fim,descricao,riscos,severidade_fonte,cor_fonte" +
-      "&order=severidade.desc,inicio.asc");
-    if (!av.length){ card.hidden = true; return; }
+    // As duas fontes em paralelo. O .catch do risco e deliberado: se a view
+    // falhar, os avisos do INMET continuam aparecendo — uma fonte nova nao
+    // pode derrubar a que ja funcionava.
+    const [av, dc] = await Promise.all([
+      api("/tempo_alertas_municipio?municipio_ibge=eq." + ibge +
+        "&select=severidade,evento,inicio,fim,descricao,riscos,severidade_fonte,cor_fonte" +
+        "&order=severidade.desc,inicio.asc"),
+      api("/tempo_risco_defesa_civil?municipio_ibge=eq." + ibge +
+        "&select=tipo,nivel,nivel_fonte,prioridade,atualizado_fonte").catch(() => []),
+    ]);
+    const htmlRisco = linhaRisco(dc);
+    $("#riscoDC").innerHTML = htmlRisco;
+
+    // Sem aviso do INMET o cartao NAO some mais: pode haver risco da Defesa
+    // Civil sozinho, que era justamente o caso que o codigo antigo escondia.
+    if (!av.length){
+      $("#alertas").innerHTML = "";
+      $("#alertasResto").innerHTML = "";
+      $("#maisAlertas").hidden = true;
+      card.hidden = !htmlRisco;
+      return;
+    }
     // ordena por gravidade real, nao alfabetica
     const peso = { grande_perigo: 3, perigo: 2, perigo_potencial: 1, observacao: 0 };
     // Gravidade fora do mapa vai para o TOPO (3.5), nunca para o fim. O INMET
