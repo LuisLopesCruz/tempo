@@ -221,6 +221,18 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 .dc-moderado .selo{border-color:var(--warning);color:var(--warning)}
 .dc-alto .selo{border-color:var(--serious);color:var(--serious)}
 .dc-muito_alto .selo, .dc-desconhecido .selo{border-color:var(--critical);color:var(--critical)}
+/* O selo "em vigor agora" segue a MESMA regra do INMET: a cor e a gravidade,
+   nao um vermelho fixo. Vermelho fixo poria selo de maxima gravidade num risco
+   BAIXO — a cor diria o contrario do dado, que foi exatamente o defeito
+   corrigido no selo do INMET. Um canal por dimensao (5.6).
+   Os seletores levam .alerta junto (.alerta.dc-alto) para ganhar de
+   ".alerta .agora" por ESPECIFICIDADE e nao por ordem no arquivo: com
+   especificidade igual venceria a regra escrita depois, e estas estao antes.
+   Testado nivel a nivel — sem o .alerta, as seis saiam cinza. */
+.alerta.dc-muito_baixo .agora, .alerta.dc-baixo .agora{background:var(--ink-muted);color:#fff}
+.alerta.dc-moderado .agora{background:var(--warning);color:#2b2000}
+.alerta.dc-alto .agora{background:var(--serious);color:#2b1200}
+.alerta.dc-muito_alto .agora, .alerta.dc-desconhecido .agora{background:var(--critical);color:#fff}
 /* Separa visualmente a fonte sem inventar uma segunda escala de cor. */
 .rdc{border-bottom:1px solid var(--grid);margin-bottom:2px}
 .rdc .fonte{font-size:11.5px;color:var(--ink-muted)}
@@ -1101,8 +1113,12 @@ function linhaRisco(dc){
         " " + dd(t.getHours()) + "h";
     return '<div class="alerta dc-' + d.nivel + '">' +
       '<div class="ic">\u25b2</div>' +
+      // O selo entra em TODAS as linhas da Defesa Civil, porque o que a fonte
+      // publica e sempre o estado vigente. Sem ele, "desde qua 30/09" podia
+      // ler como aviso vencido; com ele fica dito que aquilo vale agora.
       '<div><div class="tt">' + (DC_ROTULO[d.tipo] || d.tipo) +
-        '<span class="selo">' + (d.nivel_fonte || d.nivel) + '</span></div>' +
+        '<span class="selo">' + (d.nivel_fonte || d.nivel) + '</span>' +
+        '<span class="agora">em vigor agora</span></div>' +
       '<div class="qd"><span class="fonte">Defesa Civil do RJ</span> \u00b7 desde ' +
         quando + '</div>' +
       '</div></div>';
