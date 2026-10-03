@@ -46,7 +46,14 @@ const MIN_MUNICIPIOS = 85;   // são 92; abaixo disto o parse quebrou
 // O painel é UTF-8 (meta charset), não latin-1. Ler errado corrompe justamente
 // os nomes acentuados — MACAÉ, PETRÓPOLIS, NITERÓI — e o casamento com o IBGE
 // falharia em 30 dos 92 municípios sem erro nenhum aparecer.
+// A legenda oficial do painel publica CINCO niveis, numerados de 1 a 5 — e o
+// numero vem na coluna Prioridade de cada linha:
+//   1 MUITO BAIXO | 2 BAIXO | 3 MODERADO | 4 ALTO | 5 MUITO ALTO
+// "MUITO BAIXO" faltava aqui na primeira versao: ele cairia em 'desconhecido'
+// e o painel, que mostra desconhecido em vermelho no topo, exibiria o nivel
+// MAIS BRANDO como se fosse o mais grave.
 const NIVEL_RISCO: Record<string, string> = {
+  "MUITO BAIXO": "muito_baixo",
   "BAIXO": "baixo",
   "MODERADO": "moderado",
   "ALTO": "alto",
