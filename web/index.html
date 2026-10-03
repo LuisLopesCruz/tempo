@@ -262,8 +262,27 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 .sev-grande_perigo .selo{border-color:var(--critical);color:var(--critical)}
 .sev-observacao .selo{border-color:var(--ink-muted);color:var(--ink-muted)}
 /* Legenda da rampa, acima da lista */
-.legal{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:0 0 14px;
-  padding-bottom:12px;border-bottom:1px solid var(--grid);font-size:11.5px;color:var(--ink-muted)}
+/* Tres linhas empilhadas: avisos do INMET, riscos da Defesa Civil, e a
+   intensidade. So a ULTIMA fecha com a divisoria — repetir a linha em cada uma
+   dividiria a legenda em tres blocos soltos em vez de um bloco de tres linhas. */
+.legal{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:0 0 7px;
+  font-size:11.5px;color:var(--ink-muted)}
+.legal.fim{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--grid)}
+.legal .rot{flex:0 0 auto;font-weight:600;color:var(--ink-2)}
+/* As DUAS rampas vivem na MESMA grade, nao em duas linhas flex separadas.
+   Colunas de grade so se alinham dentro do mesmo container: com dois flex
+   empilhados, "Observacao" e "Muito baixo . Baixo" tem larguras diferentes e
+   as cores desencontram — medido, so a primeira coluna coincidia. Na mesma
+   grade, o cinza do INMET fica exatamente sobre o cinza da Defesa Civil, e a
+   correspondencia entre as escalas se le sem explicacao. */
+.legal.rampa{display:grid;grid-template-columns:auto repeat(4, auto);
+  justify-content:start;gap:7px 14px}
+/* No celular a grade de 5 colunas nao cabe: vira uma coluna por item, com o
+   rotulo da fonte ocupando a linha inteira. */
+@media (max-width:560px){
+  .legal.rampa{grid-template-columns:repeat(2, auto)}
+  .legal.rampa .rot{grid-column:1 / -1;margin-top:4px}
+}
 .legal b{display:inline-flex;align-items:center;gap:5px;font-weight:400}
 .legal i{width:11px;height:11px;border-radius:3px;display:inline-block}
 /* Divisor, nao espaco elastico: com flex:1 as amostras iam parar na borda
@@ -361,12 +380,22 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
     <p class="hint">Do INMET e da Defesa Civil do RJ. N&atilde;o entram no c&aacute;lculo da
       probabilidade &mdash; &oacute;rg&atilde;o oficial <b>sobrep&otilde;e</b> a previs&atilde;o,
       n&atilde;o vota nela.</p>
-    <div class="legal">
+    <div class="legal rampa">
+      <span class="rot">Avisos INMET</span>
       <b><i style="background:var(--ink-muted)"></i>Observa&ccedil;&atilde;o</b>
       <b><i style="background:var(--warning)"></i>Perigo potencial</b>
       <b><i style="background:var(--serious)"></i>Perigo</b>
       <b><i style="background:var(--critical)"></i>Grande perigo</b>
-      <span class="sep"></span>
+      <span class="rot">Defesa Civil</span>
+      <!-- cinza cobre DOIS niveis da fonte: ela publica "muito baixo" e
+           "baixo", e ambos querem dizer "sem excecao aqui". Dizer os dois
+           evita que alguem procure uma quinta cor que nao existe. -->
+      <b><i style="background:var(--ink-muted)"></i>Muito baixo &middot; Baixo</b>
+      <b><i style="background:var(--warning)"></i>Moderado</b>
+      <b><i style="background:var(--serious)"></i>Alto</b>
+      <b><i style="background:var(--critical)"></i>Muito alto</b>
+    </div>
+    <div class="legal fim">
       <b><span class="amostra">cheio</span>em vigor agora</b>
       <b><span class="amostra fraca">esmaecido</span>a seguir</b>
     </div>
