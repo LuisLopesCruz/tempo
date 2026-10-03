@@ -100,6 +100,13 @@ select{min-width:230px}
 .tleg span{display:inline-flex;align-items:center;gap:5px}
 #aprTab .gate{max-width:180px}
 table.tab td .sub{display:block;font-size:11px;color:var(--ink-muted);margin-top:2px}
+/* O numero manda, a contagem explica: tamanho separa o dado do rodape que o
+   justifica, sem precisar de outra cor. */
+table.tab td .forte{display:block;font-size:15px;font-weight:620;color:var(--ink)}
+/* A sublinha do cabecalho nao e maiuscula nem espacada como o titulo: ela e
+   explicacao, nao rotulo, e tem de parecer outra coisa. */
+table.tab th .sub{display:block;font-size:10px;font-weight:400;text-transform:none;
+  letter-spacing:0;color:var(--ink-muted);margin-top:2px}
 button:hover{border-color:var(--accent)}
 button.ghost{background:transparent}
 .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:20px}
@@ -1083,15 +1090,32 @@ function renderTabela(linhas){
   const rows = linhas.filter((d) =>
     d.horizonte_h >= 0 && d.horizonte_h <= 48 && new Date(d.valido_em).getHours() % 3 === 0);
   $("#tab").innerHTML =
-    "<thead><tr><th>Quando</th><th>Prob. chuva</th><th>Familias</th><th>Mediana</th>" +
-    "<th>Faixa p25-p75</th><th>Max</th><th>Rajada</th></tr></thead><tbody>" +
+    "<thead><tr><th>Quando</th><th>Prob. chuva</th>" +
+    "<th>Concord&acirc;ncia</th><th>Mediana</th>" +
+    // "p25-p75" so diz algo para quem ja sabe estatistica. O que o numero e,
+    // em palavras: a faixa onde cai a metade do meio das linhagens — fora dela
+    // ficam a quarta parte mais seca e a quarta parte mais chuvosa.
+    "<th>Faixa prov&aacute;vel<span class=\"sub\">metade central</span></th>" +
+    "<th>Max</th><th>Rajada</th></tr></thead><tbody>" +
     rows.map(function (d){
       const t = new Date(d.valido_em);
       const k = Math.round(+d.prob_chuva * FAMILIAS);
+      // CONCORDANCIA NAO E O MESMO QUE PROBABILIDADE. Concordar e as linhagens
+      // apontarem para o MESMO lado, qualquer que seja ele: 0 de 8 preveem
+      // chuva significa que as 8 concordam — que nao chove —, e nao que a
+      // concordancia e zero. Por isso conta o maior dos dois lados.
+      const juntas = Math.max(k, FAMILIAS - k);
+      const pct = Math.round(juntas / FAMILIAS * 100);
+      const nota = k === 0          ? "as " + FAMILIAS + " concordam: seco"
+                 : k === FAMILIAS   ? "as " + FAMILIAS + " concordam: chove"
+                 : k * 2 === FAMILIAS ? "empate: " + k + " e " + k
+                 : juntas + " de " + FAMILIAS + " concordam: " +
+                   (k > FAMILIAS - k ? "chove" : "seco");
       return "<tr><td>" + diaSem[t.getDay()] + " " + dd(t.getDate()) + "/" + dd(t.getMonth() + 1) +
         " " + dd(t.getHours()) + "h</td>" +
         "<td>" + Math.round(d.prob_chuva * 100) + "%</td>" +
-        "<td>" + k + " de " + FAMILIAS + "</td>" +
+        "<td><span class=\"forte\">" + pct + "%</span>" +
+          "<span class=\"sub\">" + nota + "</span></td>" +
         "<td>" + nf(d.precip_mediana) + " mm</td>" +
         "<td>" + nf(d.precip_p25) + "-" + nf(d.precip_p75) + " mm</td>" +
         "<td>" + nf(d.precip_max) + " mm</td>" +
