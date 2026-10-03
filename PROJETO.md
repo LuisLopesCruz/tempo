@@ -1607,6 +1607,9 @@ apoia neles.
 
 | Data | Decisão |
 |---|---|
+| 2026-10-03 | **A legenda virou tres linhas: avisos INMET, Defesa Civil, e a intensidade** (pedido do usuario). As duas fontes compartilham a rampa de cor mas tem vocabularios diferentes, e a legenda so nomeava o do INMET — quem via um selo cinza escrito BAIXO nao tinha onde confirmar o que aquilo valia. |
+| 2026-10-03 | **As duas rampas ficam na MESMA grade CSS, nao em duas linhas flex empilhadas.** Colunas de grade so se alinham dentro do mesmo container: com dois flex separados, "Observacao" e "Muito baixo . Baixo" tem larguras diferentes e as cores desencontram. **Medido**: so a primeira coluna coincidia (157/157), as outras tres erravam por ate 37 px. Na mesma grade, as quatro batem exatamente. |
+| 2026-10-03 | **O cinza aparece rotulado como "Muito baixo . Baixo".** A fonte publica cinco niveis e dois deles sao cinza; dizer so um faria o leitor procurar uma quinta cor que nao existe. |
 | 2026-10-03 | **O selo "em vigor agora" passou a marcar tambem o risco da Defesa Civil** (pedido do usuario), em TODAS as linhas — o que a fonte publica e sempre o estado vigente. Sem ele, "desde qua 30/09" podia ler como aviso vencido. |
 | 2026-10-03 | **O selo segue a rampa de gravidade, nao vermelho fixo.** O usuario pediu "vermelho", mas vermelho fixo poria selo de maxima gravidade num risco BAIXO — e esse foi exatamente o defeito ja corrigido no selo do INMET. Mantida a regra: matiz = gravidade. |
 | 2026-10-03 | **A primeira versao do selo saiu toda cinza, e a captura de tela nao denunciou.** `.dc-alto .agora` tem a MESMA especificidade de `.alerta .agora` e estava escrita ANTES dela, entao perdia por ordem. So apareceu ao medir `getComputedStyle` nos seis niveis; olhar a tela nao bastou. Corrigido com `.alerta.dc-alto`, que ganha por especificidade e nao depende de ordem. |
