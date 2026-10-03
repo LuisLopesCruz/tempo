@@ -1607,6 +1607,7 @@ apoia neles.
 
 | Data | Decisão |
 |---|---|
+| 2026-10-03 | **O valor da concordancia voltou ao tamanho normal da tabela.** Eu tinha lido "colocar o dado maior" como maior que as outras colunas; era maior que a legenda abaixo dele. Com 15 px numa tabela de 12,5 px, a coluna passava a se ler como mais importante que as vizinhas — duas escalas de texto onde deve haver uma. Agora os sete valores principais medem 12,5 px e so o rodape mede 11 px. **Medido no getComputedStyle das sete colunas**, nao conferido no olho. |
 | 2026-10-03 | **A coluna "Familias" da tabela virou "Concordancia", com o % grande e a contagem embaixo** (pedido do usuario). Tamanho separa o dado do rodape que o justifica, sem gastar outra cor. |
 | 2026-10-03 | **Concordancia NAO e probabilidade, e por isso  virou 100%, nao 0%.** Concordar e as linhagens apontarem para o MESMO lado, qualquer que seja: se nenhuma preve chuva, as oito concordam — que nao chove. A coluna conta o maior dos dois lados. Aplicar o pedido ao pe da letra daria "0% de concordancia" num dia de consenso total, que e a mesma vagueza que o usuario ja tinha apontado no cartao principal. O rodape diz o lado: "6 de 8 concordam: chove" ou "...: seco", e empate tem texto proprio. |
 | 2026-10-03 | **"Faixa p25-p75" virou "Faixa provavel" com a sublinha "metade central".** O rotulo anterior so dizia algo a quem ja sabe estatistica; o novo diz o que o numero e — a faixa onde cai a metade do meio das linhagens. A sublinha do cabecalho nao e maiuscula nem espacada como o titulo, porque e explicacao e nao rotulo. |

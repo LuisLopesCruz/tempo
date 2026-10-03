@@ -100,9 +100,10 @@ select{min-width:230px}
 .tleg span{display:inline-flex;align-items:center;gap:5px}
 #aprTab .gate{max-width:180px}
 table.tab td .sub{display:block;font-size:11px;color:var(--ink-muted);margin-top:2px}
-/* O numero manda, a contagem explica: tamanho separa o dado do rodape que o
-   justifica, sem precisar de outra cor. */
-table.tab td .forte{display:block;font-size:15px;font-weight:620;color:var(--ink)}
+/* O valor principal de CONCORDANCIA nao leva tamanho proprio: ele tem de ficar
+   igual ao 23% da coluna ao lado, senao a tabela passa a ter duas escalas de
+   texto e o olho le uma coluna como mais importante que as outras. Quem separa
+   o dado da explicacao e o .sub, que e menor — nao o valor, que e normal. */
 /* A sublinha do cabecalho nao e maiuscula nem espacada como o titulo: ela e
    explicacao, nao rotulo, e tem de parecer outra coisa. */
 table.tab th .sub{display:block;font-size:10px;font-weight:400;text-transform:none;
@@ -1114,8 +1115,7 @@ function renderTabela(linhas){
       return "<tr><td>" + diaSem[t.getDay()] + " " + dd(t.getDate()) + "/" + dd(t.getMonth() + 1) +
         " " + dd(t.getHours()) + "h</td>" +
         "<td>" + Math.round(d.prob_chuva * 100) + "%</td>" +
-        "<td><span class=\"forte\">" + pct + "%</span>" +
-          "<span class=\"sub\">" + nota + "</span></td>" +
+        "<td>" + pct + "%<span class=\"sub\">" + nota + "</span></td>" +
         "<td>" + nf(d.precip_mediana) + " mm</td>" +
         "<td>" + nf(d.precip_p25) + "-" + nf(d.precip_p75) + " mm</td>" +
         "<td>" + nf(d.precip_max) + " mm</td>" +
