@@ -210,6 +210,11 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
    MESMA rampa do INMET de proposito: duas escalas de cor no mesmo cartao
    obrigariam o leitor a lembrar qual e qual. Nivel nao mapeado cai no mais
    grave, nao no mais brando — mesma licao da severidade do INMET. */
+/* Os niveis brandos agora aparecem, entao precisam de cor propria. Cinza, o
+   mesmo de "Observacao" na rampa do INMET: diz "sem excecao aqui" sem
+   competir com o amarelo/laranja/vermelho que marcam o que importa. */
+.dc-muito_baixo .ic, .dc-baixo .ic{color:var(--ink-muted)}
+.dc-muito_baixo .selo, .dc-baixo .selo{border-color:var(--ink-muted);color:var(--ink-muted)}
 .dc-moderado .ic{color:var(--warning)}
 .dc-alto .ic{color:var(--serious)}
 .dc-muito_alto .ic, .dc-desconhecido .ic{color:var(--critical)}
@@ -1064,27 +1069,42 @@ function fmtQuando(ini, fim){
   return b ? f(a) + " até " + f(b) : "a partir de " + f(a);
 }
 
-// Rotulos da Defesa Civil. BAIXO e MODERADO nao aparecem: hoje 84 dos 92
-// municipios estao em MODERADO no hidrologico, e pintar quase todo o estado
-// todo dia ensina o leitor a ignorar a cor. So entra o que e excecao.
-const DC_ROTULO = { geologico: "Risco de deslizamento", hidrologico: "Risco hidrol\u00f3gico" };
-const DC_OCULTA = { baixo: 1, moderado: 1 };
+// Rotulos da Defesa Civil. O termo tecnico vem primeiro e o efeito concreto
+// entre parenteses: "geologico" e a palavra da fonte, "deslizamentos" e o que
+// a pessoa precisa entender.
+const DC_ROTULO = {
+  geologico:   "Risco geol\u00f3gico (deslizamentos)",
+  hidrologico: "Risco hidrol\u00f3gico (enchentes)",
+};
 
+// SEMPRE mostra o estado vigente dos dois riscos, em qualquer nivel.
+// A objecao que eu havia levantado — 84 dos 92 municipios em MODERADO — valia
+// para um MAPA, onde quase tudo acenderia junto. Aqui o painel mostra UM
+// municipio por vez, e para esse municipio saber que esta em BAIXO e
+// informacao, nao ruido: e a diferenca entre "esta calmo" e "nao sei".
+// A fonte numera os niveis de 1 a 5 (1 muito baixo ... 5 muito alto) e publica
+// o numero na coluna Prioridade; a ordenacao usa esse numero, nao o texto.
 function linhaRisco(dc){
-  // Nivel desconhecido NAO e ocultado: se a Defesa Civil criar um nivel novo,
-  // ele aparece em vermelho em vez de sumir. Falhar do lado seguro.
-  const mostra = (dc || []).filter((d) => !(d.nivel in DC_OCULTA));
+  const mostra = (dc || []).slice();
   if (!mostra.length) return "";
   mostra.sort((a, b) => (b.prioridade || 0) - (a.prioridade || 0));
+  const hoje = new Date().toDateString();
   return '<div class="rdc">' + mostra.map((d) => {
     const t = new Date(d.atualizado_fonte);
-    const hm = dd(t.getHours()) + "h" + dd(t.getMinutes());
+    // A Defesa Civil publica MUDANCA de nivel, nao boletim diario: medido em
+    // 03/10, municipios em BAIXO estavam parados havia ate 4 dias. Mostrar so
+    // "15h31" faria um nivel de tres dias atras ler como "hoje as 15h31".
+    // Quando nao e de hoje, a data entra.
+    const quando = t.toDateString() === hoje
+      ? dd(t.getHours()) + "h" + dd(t.getMinutes())
+      : diaSem[t.getDay()] + " " + dd(t.getDate()) + "/" + dd(t.getMonth() + 1) +
+        " " + dd(t.getHours()) + "h";
     return '<div class="alerta dc-' + d.nivel + '">' +
       '<div class="ic">\u25b2</div>' +
       '<div><div class="tt">' + (DC_ROTULO[d.tipo] || d.tipo) +
         '<span class="selo">' + (d.nivel_fonte || d.nivel) + '</span></div>' +
-      '<div class="qd"><span class="fonte">Defesa Civil do RJ</span> \u00b7 atualizado ' +
-        hm + '</div>' +
+      '<div class="qd"><span class="fonte">Defesa Civil do RJ</span> \u00b7 desde ' +
+        quando + '</div>' +
       '</div></div>';
   }).join("") + '</div>';
 }
