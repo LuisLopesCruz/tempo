@@ -1,13 +1,24 @@
 // ============================================================================
-// TEMPO-RJ — coletor de OBSERVAÇÃO e ALERTA OFICIAL
+// TEMPO-RJ — coletor de OBSERVAÇÃO, ALERTA OFICIAL e RISCO DA DEFESA CIVIL
 // ----------------------------------------------------------------------------
-// Camada 2 do PROJETO.md. Duas naturezas distintas, deliberadamente separadas:
+// Camada 2 do PROJETO.md. Três naturezas distintas, deliberadamente separadas:
 //   * observação  -> CORRIGE a previsão e alimenta a verificação
 //   * alerta      -> SOBREPÕE a previsão; não vota nela (princípio 5.3)
+//   * risco       -> ESTADO do município (solo/hidrologia), não evento
+//
+// Por que o risco entra aqui e não numa função nova: ele é mais uma leitura
+// horária de fonte externa, igual às outras duas. Função própria exigiria
+// outro cron, outro segredo e outro deploy — mais processo do que o problema
+// merece.
 //
 // DESCOBERTA OPERACIONAL (2026-09-10): ambas as fontes recusam a requisição
 // sem User-Agent de navegador — a do Alerta Rio devolve "Request Rejected"
 // (WAF) e a do INMET derruba a conexão. O cabeçalho abaixo não é cosmético.
+//
+// verify_jwt FICA EM false DE PROPOSITO: quem chama e o pg_cron via pg_net,
+// que manda o cabecalho x-tempo-secret e nao um JWT. A autenticacao propria
+// esta no corpo da funcao, logo abaixo. Ligar verify_jwt derruba a coleta
+// inteira com 401 — aconteceu no deploy da v7, em 2026-10-03.
 // ============================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -24,6 +35,24 @@ const CAB = { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" };
 const ALERTA_RIO = "http://websempre.rio.rj.gov.br/json/chuvas";
 const INMET_AVISOS = "https://apiprevmet3.inmet.gov.br/avisos/ativos";
 
+// Painel do CEMADEN-RJ, da Defesa Civil estadual. NÃO é API: é HTML renderado
+// no servidor, e por isso frágil — se mudarem o layout, o parse devolve zero
+// linhas. A trava MIN_MUNICIPIOS existe exatamente para isso: melhor falhar
+// alto e aparecer no coleta_log do que gravar vazio em silêncio.
+const CEMADEN_RJ = "https://painelcemadenrj.defesacivil.rj.gov.br/monitoramento/v2/municipio/";
+const RISCOS: Array<[string, string]> = [["geo", "geologico"], ["hidro", "hidrologico"]];
+const MIN_MUNICIPIOS = 85;   // são 92; abaixo disto o parse quebrou
+
+// O painel é UTF-8 (meta charset), não latin-1. Ler errado corrompe justamente
+// os nomes acentuados — MACAÉ, PETRÓPOLIS, NITERÓI — e o casamento com o IBGE
+// falharia em 30 dos 92 municípios sem erro nenhum aparecer.
+const NIVEL_RISCO: Record<string, string> = {
+  "BAIXO": "baixo",
+  "MODERADO": "moderado",
+  "ALTO": "alto",
+  "MUITO ALTO": "muito_alto",
+};
+
 // O INMET publica hoje tres niveis, mas com id_severidade 6, 7 e 8 — a
 // numeracao comecar em 6 diz que a tabela deles tem (ou teve) outros. Nada
 // garante que um 9 nao apareca.
@@ -32,6 +61,37 @@ const SEVERIDADE: Record<string, string> = {
   "perigo": "perigo",
   "grande perigo": "grande_perigo",
 };
+
+// Lê a tabela do painel. Cada <tr> traz: municipio | REDEC | nivel |
+// ultima atualizacao | historico | prioridade. O cabeçalho usa <th>, então
+// filtrar por <td> já o descarta sozinho.
+function lerRisco(html: string, tipo: string): Record<string, unknown>[] {
+  const linhas: Record<string, unknown>[] = [];
+  for (const tr of html.match(/<tr[^>]*>[\s\S]*?<\/tr>/g) ?? []) {
+    const td = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+      .map((m) => m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .filter((x) => x.length > 0);
+    if (td.length < 4) continue;
+
+    // "03/10/2026 06:53:41" em horário de Brasília. O -03:00 é fixo pela mesma
+    // razão que no alerta do INMET: o Brasil não tem horário de verão hoje.
+    const d = td[3].match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+    if (!d) continue;
+
+    const bruto = td[2].toUpperCase();
+    linhas.push({
+      municipio: td[0],
+      tipo,
+      // Nível fora do mapa vira 'desconhecido', nunca o mais brando: mesma
+      // lição da severidade do INMET. A palavra original vai junto.
+      nivel: NIVEL_RISCO[bruto] ?? "desconhecido",
+      nivel_fonte: td[2],
+      prioridade: td.length > 4 ? td[4] : null,
+      atualizado_fonte: `${d[3]}-${d[2]}-${d[1]}T${d[4]}:${d[5]}:${d[6]}-03:00`,
+    });
+  }
+  return linhas;
+}
 
 function evento(desc: string): string {
   const d = (desc || "").toLowerCase();
@@ -75,7 +135,7 @@ Deno.serve(async (req: Request) => {
   );
 
   const problemas: string[] = [];
-  let nObs = 0, nAlertas = 0;
+  let nObs = 0, nAlertas = 0, nRisco = 0;
 
   // ------------------------------------------------- observação: Alerta Rio
   try {
@@ -169,6 +229,26 @@ Deno.serve(async (req: Request) => {
     problemas.push("inmet: " + (e instanceof Error ? e.message : String(e)));
   }
 
+  // ------------------------------------- risco oficial: CEMADEN-RJ / Defesa Civil
+  // Lê AO VIVO as duas listas toda hora. A fonte só se atualiza uma punhada de
+  // vezes por dia, mas quem decide o que é foto nova é o carimbo dela: a chave
+  // única (municipio, tipo, atualizado_fonte) faz o banco recusar a repetida.
+  for (const [acao, tipo] of RISCOS) {
+    try {
+      const r = await fetch(CEMADEN_RJ + "?action=" + acao, { headers: CAB });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const linhas = lerRisco(await r.text(), tipo);
+      if (linhas.length < MIN_MUNICIPIOS) {
+        throw new Error(`parse devolveu ${linhas.length} municipios, esperado >= ${MIN_MUNICIPIOS}`);
+      }
+      const { data, error } = await sb.rpc("tempo_ingerir_risco", { p_rows: linhas });
+      if (error) problemas.push(`risco ${tipo} ingestao: ` + error.message);
+      else nRisco += (data as number) ?? 0;
+    } catch (e) {
+      problemas.push(`risco ${tipo}: ` + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   const ms = Date.now() - t0;
   // rpc() devolve um builder thenable, NAO uma Promise: nao existe .catch().
   // O log e best-effort, entao o try/catch fica explicito.
@@ -177,13 +257,14 @@ Deno.serve(async (req: Request) => {
       p_fonte: "observacao+alerta",
       p_ms: ms,
       p_ok: problemas.length === 0,
-      p_n: nObs + nAlertas,
+      p_n: nObs + nAlertas + nRisco,
       p_erro: problemas.length ? problemas.join(" | ").slice(0, 2000) : null,
     });
   } catch (_) { /* nunca derrubar a coleta por causa do log */ }
 
   return new Response(
-    JSON.stringify({ ok: problemas.length === 0, observacoes: nObs, alertas: nAlertas, ms, problemas }),
+    JSON.stringify({ ok: problemas.length === 0, observacoes: nObs, alertas: nAlertas,
+                     risco: nRisco, ms, problemas }),
     { headers: { "Content-Type": "application/json" } },
   );
 });
