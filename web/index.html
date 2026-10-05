@@ -1132,7 +1132,9 @@ function renderTabela(linhas){
                    (k > FAMILIAS - k ? "chove" : "seco");
       return "<tr><td>" + diaSem[t.getDay()] + " " + dd(t.getDate()) + "/" + dd(t.getMonth() + 1) +
         " " + dd(t.getHours()) + "h</td>" +
-        "<td>" + Math.round(d.prob_chuva * 100) + "%</td>" +
+        // Mesmo principio do cartao de cima: k de 8 -> a chance da tabela de
+        // calibracao, nao a fracao bruta (que exagera).
+        "<td>" + (chanceTabela(k, FAMILIAS) ? chanceTabela(k, FAMILIAS).txt + "%" : "&mdash;") + "</td>" +
         "<td>" + pct + "%<span class=\"sub\">" + nota + "</span></td>" +
         "<td>" + nf(d.precip_mediana) + " mm</td>" +
         "<td>" + nf(d.precip_p25) + "-" + nf(d.precip_p75) + " mm</td>" +
