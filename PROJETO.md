@@ -319,7 +319,9 @@ faz sentido, já que o CEMADEN nasceu do desastre de 2011 ali.
 
 Faltam 28 municípios, concentrados no **Noroeste** (8) e nas **Baixadas** (7);
 também Macaé, Cabo Frio e Carmo. Esses seguem com pesos neutros. Vários deles têm
-estação do INMET — é o que fecharia o buraco, se o token sair.
+estação do INMET — **mas o token foi negado em 2026-10-04** (ver decisões), então o
+buraco não fecha por esse caminho. Os 28 seguem com pesos neutros até haver outra
+fonte de chuva medida neles.
 
 #### Duas ambiguidades do CEMADEN resolvidas no dado, não no chute
 
@@ -1607,6 +1609,12 @@ apoia neles.
 
 | Data | Decisão |
 |---|---|
+| 2026-10-05 | **O INMET negou o token (resposta de 2026-10-04).** Não há credencial de API para pessoa física: só o portal, o **BDMEP** (pedido manual por e-mail, arquivo histórico) e, para instituição, **Acordo de Cooperação Técnica**. Reconfirmado no dado no mesmo dia: o catálogo `/estacoes/T` é público (672 estações, **26 automáticas no RJ**, operantes), mas toda rota de dados devolve **204** — inclusive janeiro de 2025 numa estação operante, que com certeza tem medição. |
+| 2026-10-05 | **O mapa público do INMET (`mapas.inmet.gov.br`) também não serve para coleta.** Sugestão do usuário, investigada: a página busca dados de estação por `POST {apimapas}/dados/` com `gcap: token` no corpo — um **token reCAPTCHA v3 gerado a cada requisição** — atrás de defesa anti-robô F5 (`/TSbd/`). Coletar por ali exigiria produzir tokens de CAPTCHA, isto é, se passar por humano: **descartado**, e seria contornar a decisão que o próprio INMET acabou de comunicar. O mapa é para pessoa olhando. |
+| 2026-10-05 | **A negativa fecha DOIS caminhos, não um.** O token servia para (1) verificar **vento** — a previsão de rajada nunca foi conferida contra nada medido — e (2) cobrir com chuva medida os **28 municípios sem CEMADEN**. Os dois ficam abertos. |
+| 2026-10-05 | **METAR dos aeroportos é a saída sem token para o vento.** `aviationweather.gov/api/data/metar` responde 200 sem credencial; **6 de 7 aeroportos do RJ** ao vivo (SBRJ, SBGL, SBJR, SBCB, SBME, SBCP; SBRS fora da janela testada), de hora em hora, padrão OMM. Cobre capital, Norte Fluminense, Lagos e Sul. Não resolve o caminho (2): METAR brasileiro não traz quantidade de chuva. **Avaliado, não implementado.** |
+| 2026-10-05 | **No METAR, rajada ausente não é dado ausente — é dado censurado.** O código só reporta rajada (`G`) quando ela passa a média em ~10 kt. `wgst: null` com `wspd: 10` diz que a rajada ficou abaixo de ~20 kt, não que ninguém mediu. Uma verificação que tratasse o nulo como falta jogaria fora justamente os dias calmos, e avaliaria a previsão de rajada só nos dias de vento forte — viés de seleção. |
+| 2026-10-05 | **Alerta Rio não tem vento.** As 33 estações do JSON que já coletamos são todas `pluviometric`; variáveis só de chuva (`h01`…`h96`, `m05`, `m15`, `mes`). Descartado como fonte de vento. |
 | 2026-10-03 | **O valor da concordancia voltou ao tamanho normal da tabela.** Eu tinha lido "colocar o dado maior" como maior que as outras colunas; era maior que a legenda abaixo dele. Com 15 px numa tabela de 12,5 px, a coluna passava a se ler como mais importante que as vizinhas — duas escalas de texto onde deve haver uma. Agora os sete valores principais medem 12,5 px e so o rodape mede 11 px. **Medido no getComputedStyle das sete colunas**, nao conferido no olho. |
 | 2026-10-03 | **A coluna "Familias" da tabela virou "Concordancia", com o % grande e a contagem embaixo** (pedido do usuario). Tamanho separa o dado do rodape que o justifica, sem gastar outra cor. |
 | 2026-10-03 | **Concordancia NAO e probabilidade, e por isso  virou 100%, nao 0%.** Concordar e as linhagens apontarem para o MESMO lado, qualquer que seja: se nenhuma preve chuva, as oito concordam — que nao chove. A coluna conta o maior dos dois lados. Aplicar o pedido ao pe da letra daria "0% de concordancia" num dia de consenso total, que e a mesma vagueza que o usuario ja tinha apontado no cartao principal. O rodape diz o lado: "6 de 8 concordam: chove" ou "...: seco", e empate tem texto proprio. |
