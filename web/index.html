@@ -463,12 +463,8 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
     <p class="hint"><b>Os mil&iacute;metros s&atilde;o o n&uacute;mero central do dia:</b> metade das fam&iacute;lias
       de modelo prev&ecirc; mais que isso, metade prev&ecirc; menos. Em <b style="color:var(--warning)">laranja</b>,
       as fam&iacute;lias discordam muito do volume e o n&uacute;mero &eacute; um palpite.<br>
-      Abaixo, <b>quantas fam&iacute;lias preveem chuva</b> (1 mm ou mais no dia) e a <b>chance medida</b>:
-      das outras vezes em que essa mesma fra&ccedil;&atilde;o de fam&iacute;lias previu chuva, quantas vezes
-      choveu de fato.<br>
-      A chance s&oacute; aparece onde j&aacute; foi medida &mdash; por enquanto, <b>para hoje</b>. Os dias
-      seguintes ganham o n&uacute;mero conforme as previs&otilde;es feitas com mais anteced&ecirc;ncia forem
-      sendo conferidas.</p>
+      Abaixo, <b>quantas fam&iacute;lias preveem chuva</b> no dia e a <b>chance</b> que essa fra&ccedil;&atilde;o
+      d&aacute; na tabela de calibra&ccedil;&atilde;o do painel &mdash; o quanto ela virou chuva de fato.</p>
     <div class="bars" id="bars"></div>
   </div>
 
@@ -748,27 +744,19 @@ function esconderTip(){ tip.style.opacity = "0"; }
    13-25 km, pluviometro mede ponto), parte e excesso de confianca. Para quem
    le o painel, o efeito e o mesmo, e a 5.4 manda declarar. */
 let CALIB = [];
-// Calibracao por JANELA (6 h e dia). A horaria acima responde por uma hora so;
-// ela nao serve para "chance de chover nas proximas 6 h": medido em 05/10, com
-// 75% das familias a hora da 37%, a janela de 6 h da 52%.
-let CALJ = [];
 
 async function carregarCalibracao(){
   try { CALIB = await api("/tempo_calibracao?select=*&order=prob_painel.asc"); }
   catch (e) { CALIB = []; console.error(e); }
-  try { CALJ = await api("/tempo_calibracao_janela?select=variavel,k,freq_observada,n_previsoes"); }
-  catch (e) { CALJ = []; console.error(e); }
 }
 
-// Chance MEDIDA para k familias numa janela: "das outras vezes em que k de 8
-// previram chuva nessa janela, quantas choveu". A calibracao e em oitavos; se
-// faltar uma familia na emissao, k e reescalado para a mesma fracao.
-// Devolve null quando a faixa ainda nao tem amostra — e a tela diz isso, em vez
-// de emprestar o numero de outra janela.
-function chanceJanela(variavel, k, n){
-  const kk = (n && n !== FAMILIAS) ? Math.round(k * FAMILIAS / n) : k;
-  const c = CALJ.filter((x) => x.variavel === variavel && +x.k === kk)[0];
-  return c ? { pct: Math.round(100 * (+c.freq_observada)), n: +c.n_previsoes } : null;
+// UMA tabela so: a mesma do cartao "O painel anuncia / Choveu de fato", lida
+// linha a linha. k de n familias -> a linha de k/n -> o quanto aquilo virou
+// chuva. Decisao do usuario em 05/10: o numero de cima tem de ser o da tabela
+// que o leitor ve embaixo, senao o painel se contradiz.
+function chanceTabela(k, n){
+  const c = freqMedida(k / (n || FAMILIAS));
+  return c ? { txt: nf(100 * (+c.freq_observada), 1), n: +c.n_previsoes } : null;
 }
 
 // Busca pela probabilidade MAIS PROXIMA, nao pelo indice: se um dia entrar uma
@@ -788,7 +776,7 @@ const pctMedida = (prob) => {
 };
 
 // ----------------------------------------------------------------- render
-function renderHero(linhas, janela){
+function renderHero(linhas){
   const j6  = linhas.filter((d) => d.horizonte_h >= 0 && d.horizonte_h <= 6);
   const j24 = linhas.filter((d) => d.horizonte_h >= 0 && d.horizonte_h <= 24);
   if (!j6.length){
@@ -799,23 +787,18 @@ function renderHero(linhas, janela){
   const maxForte = Math.max.apply(null, j24.map((d) => +d.prob_chuva_forte));
   const chuva24  = j24.reduce((s, d) => s + (+d.precip_mediana), 0);
   const raj      = Math.max.apply(null, j24.map((d) => +d.rajada_max));
-  // Quantas familias preveem chuva em ALGUMA hora das proximas 6 h — nao na
-  // hora mais chuvosa. Familia A chovendo as 14h e B as 17h sao duas familias
-  // vendo chuva na janela, embora nenhuma hora isolada tenha as duas. Vem do
-  // servidor (tempo_janela_6h); sem ele, cai na hora mais chuvosa, que e o
-  // que existia antes.
-  const n = janela ? +janela.n_familias : FAMILIAS;
-  const k = janela ? +janela.familias_com_chuva : Math.round(maxP * FAMILIAS);
+  const n = FAMILIAS;
+  const k = Math.round(maxP * FAMILIAS);
   const fracao = Math.round(100 * k / n);
 
   const dots = Array.from({ length: n }, (_, i) =>
     '<i class="dot' + (i < k ? " on" : "") + '"></i>').join("");
 
-  // Duas perguntas diferentes, lado a lado e do mesmo tamanho:
-  //   quantos modelos acham que chove  ->  o que aconteceu das outras vezes.
-  // A fracao sozinha exagera — 100% das familias virou chuva em 71% das
-  // janelas —, e por isso a chance medida nao pode ficar em letra miuda.
-  const ch = janela ? chanceJanela("chuva_6h", k, n) : null;
+  // Duas perguntas, lado a lado e do mesmo tamanho: quantas familias acham que
+  // chove -> o quanto isso virou chuva de fato, segundo a tabela do painel.
+  // A fracao sozinha exagera (8 de 8 virou chuva em 67% das horas), e por isso
+  // a chance medida nao pode ficar em letra miuda.
+  const ch = chanceTabela(k, n);
 
   const tmax = j24.length ? Math.max.apply(null, j24.map((d) => +d.temp_mediana)) : null;
   const tmin = j24.length ? Math.min.apply(null, j24.map((d) => +d.temp_mediana)) : null;
@@ -828,12 +811,12 @@ function renderHero(linhas, janela){
       '<div class="sub" style="color:var(--ink-muted)">' + k + " de " + n + "</div></div>" +
     '<div class="tile"><div class="lbl">Probabilidade &middot; 6 h</div>' +
       (ch
-        ? '<div class="val">' + ch.pct + '%</div>' +
+        ? '<div class="val">' + ch.txt + '%</div>' +
           '<div class="sub">de chance de chuva nas pr&oacute;ximas 6 h</div>' +
           '<div class="sub" style="color:var(--ink-muted)">medido em ' +
-            ch.n.toLocaleString("pt-BR") + " janelas com " + k + " de " + n + "</div>"
+            ch.n.toLocaleString("pt-BR") + " horas com " + k + " de " + n + "</div>"
         : '<div class="val" style="color:var(--ink-muted)">&mdash;</div>' +
-          '<div class="sub">chance ainda sem medida</div>') +
+          '<div class="sub">tabela de calibra&ccedil;&atilde;o indispon&iacute;vel</div>') +
     "</div>" +
     '<div class="tile"><div class="lbl">Chuva forte em 24 h</div>' +
       '<div class="val">' + Math.round(maxForte * 100) + '%</div>' +
@@ -999,24 +982,12 @@ function renderBarras(dias){
   $("#bars").innerHTML = dias.slice(0, 6).map(function (d){
     const dt = new Date(d.dia + "T12:00:00");
     const larg = Math.min(100, ((+d.mm_dia) / teto) * 100);
-    // Mesma logica do cartao das 6 h: fracao de familias -> chance medida.
-    // "Ve chuva" no dia = soma >= 1 mm, a mesma regua da calibracao diaria.
+    // Mesma logica e mesma tabela do cartao de cima: fracao de familias que
+    // preveem chuva no dia -> o quanto essa fracao virou chuva.
     const n = +d.n_familias, k = +d.familias_com_chuva;
     const fracao = Math.round(100 * k / n);
-
-    // A calibracao do dia depende da ANTECEDENCIA: confiabilidade cai com a
-    // distancia, e so o dia de hoje tem amostra que se sustenta. Para os dias
-    // seguintes a tela diz "sem medida" em vez de emprestar o numero de hoje —
-    // o que poria 87% de chance num dia a quatro dias de distancia com base na
-    // confiabilidade de uma previsao de poucas horas.
-    const hoje = new Date(); hoje.setHours(12, 0, 0, 0);
-    const dist = Math.round((dt - hoje) / 864e5);
-    const varDia = dist <= 0 ? "chuva_dia_D0" : dist <= 2 ? "chuva_dia_D12" : "chuva_dia_D34";
-    // Dia com menos de 18 h cobertas e um pedaco de dia; a calibracao e de dia
-    // inteiro, e aplicar a um pedaco superestimaria a chance.
-    const ch = (+d.horas_cobertas >= 18) ? chanceJanela(varDia, k, n) : null;
-    const chance = ch ? ch.pct + "% de chance"
-                 : (+d.horas_cobertas < 18 ? "dia incompleto" : "chance sem medida");
+    const ch = chanceTabela(k, n);
+    const chance = ch ? ch.txt + "% de chance" : "";
 
     // Volume incerto (familias espalhadas longe da mediana) continua marcado,
     // mas na cor do numero e nao numa segunda porcentagem: duas porcentagens
@@ -1449,23 +1420,17 @@ async function carregar(pontoId){
   ls.set("tempo_mun", pontoId);
   $("#meta").textContent = "carregando...";
   try {
-    // A janela vem em paralelo e com .catch: se ela falhar, o cartao volta ao
-    // calculo antigo em vez de a previsao inteira deixar de carregar.
-    const [linhas, jan] = await Promise.all([
-      api("/tempo_previsao?ponto_id=eq." + pontoId +
-        "&select=valido_em,horizonte_h,n_familias,precip_mediana,precip_p25,precip_p75," +
-        "precip_max,dispersao_precip,rajada_max,prob_chuva,prob_chuva_forte," +
-        "temp_mediana,nuvem_pct&order=valido_em.asc"),
-      api("/tempo_janela_6h?ponto_id=eq." + pontoId +
-        "&select=n_familias,familias_com_chuva").catch(() => []),
-    ]);
+    const linhas = await api("/tempo_previsao?ponto_id=eq." + pontoId +
+      "&select=valido_em,horizonte_h,n_familias,precip_mediana,precip_p25,precip_p75," +
+      "precip_max,dispersao_precip,rajada_max,prob_chuva,prob_chuva_forte," +
+      "temp_mediana,nuvem_pct&order=valido_em.asc");
     if (!linhas.length){
       $("#meta").innerHTML = '<span class="erro">Sem previsao para este municipio.</span>';
       return;
     }
-    renderHero(linhas, jan[0]); renderTempo(linhas); renderHeatmap(linhas); renderTabela(linhas);
+    renderHero(linhas); renderTempo(linhas); renderHeatmap(linhas); renderTabela(linhas);
     api("/tempo_previsao_dia?ponto_id=eq." + pontoId +
-        "&select=dia,mm_dia,n_familias,familias_com_chuva,concordancia_pct,horas_cobertas," +
+        "&select=dia,mm_dia,n_familias,familias_com_chuva,concordancia_pct," +
         "mm_normal_mes,pct_do_mes&order=dia.asc")
       .then(function(d){ renderBarras(d); renderMes(d); })
       .catch(function(e){ console.error(e); });
