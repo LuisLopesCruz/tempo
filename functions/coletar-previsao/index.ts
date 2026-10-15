@@ -15,6 +15,15 @@ const FORECAST_DAYS = 5;
 const CHUNK = 20;          // pontos por requisição
 const PAUSA_MS = 400;      // gentileza com a API gratuita
 
+// Segunda tentativa dos lotes que falharem. O 503 "The service is overloaded"
+// da Open-Meteo e passageiro: em 10 dias (05-15/10) custou 1 ciclo inteiro e 2
+// parciais, porque nao havia nova tentativa. Uma rodada so, depois de uma
+// pausa, e so enquanto houver folga para terminar antes do limite de 150 s da
+// Edge Function: passar dele mata a execucao SEM gravar log (08/10 06h nao
+// deixou rastro), o que e pior do que perder o lote.
+const PAUSA_RETRY_MS  = 15_000;
+const LIMITE_RETRY_MS = 105_000;   // depois disto nao comeca nova tentativa
+
 // O valor vive num secret do Supabase, nao aqui: ate 2026-10-02 ficava em
 // texto claro neste arquivo (risco R9), o que com o repositorio criado passou a
 // significar segredo no historico do git — que nao se apaga. Rotacionado na
@@ -87,8 +96,10 @@ Deno.serve(async (req: Request) => {
 
     const modelos = linhagens.map((l) => l.om).join(",");
 
-    for (let i = 0; i < pontos.length; i += CHUNK) {
-      const lote = pontos.slice(i, i + CHUNK);
+    // Busca e monta UM lote. Lanca erro em falha de rede, HTTP ou JSON — quem
+    // chama decide. Antes isso ficava solto no laco: um JSON truncado escapava
+    // para o catch de fora e matava a coleta INTEIRA (13/10 12h: 0 de 736).
+    const buscarLote = async (lote: Ponto[]): Promise<unknown[]> => {
       const url = `${OM}?latitude=${lote.map((p) => p.lat).join(",")}`
         + `&longitude=${lote.map((p) => p.lon).join(",")}`
         + `&hourly=${OM_VARS.join(",")}`
@@ -97,10 +108,7 @@ Deno.serve(async (req: Request) => {
         + `&timezone=UTC`;
 
       const resp = await fetch(url);
-      if (!resp.ok) {
-        problemas.push(`lote ${i}: HTTP ${resp.status} ${(await resp.text()).slice(0, 160)}`);
-        continue;
-      }
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${(await resp.text()).slice(0, 160)}`);
       const body = await resp.json();
       // Resposta multi-ponto é SEMPRE um array na MESMA ORDEM do pedido.
       // A API devolve a célula do grid, não a coordenada pedida — por isso
@@ -139,25 +147,64 @@ Deno.serve(async (req: Request) => {
         }
       });
 
-      if (linhas.length) {
-        const { data: n, error: eIng } = await sb.rpc("tempo_ingerir_previsao", { p_rows: linhas });
-        if (eIng) problemas.push(`lote ${i}: ingestão ${eIng.message}`);
-        else gravados += (n as number) ?? 0;
+      return linhas;
+    };
+
+    // Gravar NAO entra na segunda tentativa: erro de ingestao e do nosso banco,
+    // e buscar de novo na Open-Meteo nao o resolveria.
+    const gravar = async (i: number, linhas: unknown[]) => {
+      if (!linhas.length) return;
+      const { data: n, error: eIng } = await sb.rpc("tempo_ingerir_previsao", { p_rows: linhas });
+      if (eIng) problemas.push(`lote ${i}: ingestão ${eIng.message}`);
+      else gravados += (n as number) ?? 0;
+    };
+    const msgDe = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 200);
+
+    // Primeira passada: cada lote isolado; o que falhar fica anotado.
+    const falhos = new Map<number, string>();
+    for (let i = 0; i < pontos.length; i += CHUNK) {
+      try {
+        await gravar(i, await buscarLote(pontos.slice(i, i + CHUNK)));
+      } catch (e) {
+        falhos.set(i, msgDe(e));
       }
       if (i + CHUNK < pontos.length) await sleep(PAUSA_MS);
     }
 
+    // Segunda tentativa, com prazo.
+    const recuperados: string[] = [];
+    if (falhos.size) {
+      await sleep(PAUSA_RETRY_MS);
+      for (const [i, erro1] of falhos) {
+        if (Date.now() - t0 > LIMITE_RETRY_MS) {
+          problemas.push(`lote ${i}: ${erro1} (sem folga para 2a tentativa)`);
+          continue;
+        }
+        try {
+          await gravar(i, await buscarLote(pontos.slice(i, i + CHUNK)));
+          recuperados.push(`lote ${i} (${erro1.slice(0, 40)})`);
+        } catch (e) {
+          problemas.push(`lote ${i}: ${erro1} | 2a tentativa: ${msgDe(e)}`);
+        }
+      }
+    }
+
     const ms = Date.now() - t0;
+    // Lote recuperado nao e falha: a coleta saiu completa. Mas fica anotado no
+    // log, para dar para medir com que frequencia a segunda tentativa salva.
+    const nota = problemas.length ? problemas.join(" | ")
+               : recuperados.length ? "recuperado na 2a tentativa: " + recuperados.join(", ")
+               : null;
     await sb.rpc("tempo_log_coleta", {
       p_fonte: "open-meteo",
       p_ms: ms,
       p_ok: problemas.length === 0,
       p_n: gravados,
-      p_erro: problemas.length ? problemas.join(" | ").slice(0, 2000) : null,
+      p_erro: nota ? nota.slice(0, 2000) : null,
     });
 
     return new Response(
-      JSON.stringify({ ok: problemas.length === 0, gravados, ms, problemas }),
+      JSON.stringify({ ok: problemas.length === 0, gravados, ms, problemas, recuperados }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (e) {
