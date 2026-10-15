@@ -981,14 +981,19 @@ function renderHeatmap(linhas){
     if (!d) return;
     const t = new Date(d.valido_em);
     const k = Math.round(+d.prob_chuva * FAMILIAS);
+    // Formato pedido pelo usuario em 15/10: o que se le primeiro em negrito
+    // (volume e chance), depois de onde a chance vem, depois o vento. Saem
+    // maximo e dispersao — informacao de quem audita, nao de quem consulta.
+    // No #tip o <b> ja e bloco: sem <br> depois dele, senao abre linha vazia.
+    const ch = chanceTabela(k, FAMILIAS);
+    const mm = +d.precip_mediana;
     mostrarTip(e,
       dd(t.getHours()) + ":00 &middot; " + diaSem[t.getDay()] + " " + t.getDate(),
-      (chanceTabela(k, FAMILIAS)
-        // Sem <br> depois: no #tip o <b> ja e bloco, e o <br> abria linha vazia.
-        ? "<b>" + chanceTabela(k, FAMILIAS).txt + "% de chance de chuva</b>" : "") +
-      k + " de " + FAMILIAS + " fam&iacute;lias preveem chuva<br>" +
-      "mediana " + nf(d.precip_mediana) + " mm &middot; max " + nf(d.precip_max) + " mm<br>" +
-      "dispers&atilde;o " + nf(d.dispersao_precip) + " mm &middot; rajada " + Math.round(d.rajada_max) + " km/h");
+      "<b>Previsto " + (mm >= 0.05 ? "~" : "") + nf(mm) + " mm</b>" +
+      (ch ? "<b>" + ch.txt + "% de chance</b>" : "") +
+      Math.round(100 * k / FAMILIAS) + "% preveem chuva<br>" +
+      k + " de " + FAMILIAS + " apontam chuva<br>" +
+      "Rajada " + Math.round(d.rajada_max) + " km/h");
   };
   hm.onmouseleave = esconderTip;
   renderLegendaChance();
