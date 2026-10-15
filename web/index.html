@@ -142,6 +142,11 @@ h2{font-size:13px;font-weight:620;margin:0 0 3px;letter-spacing:.01em}
 .cell.vazio{background:transparent;box-shadow:0 0 0 1px var(--grid) inset}
 .legenda{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:11px;color:var(--ink-muted);flex-wrap:wrap}
 .legenda i{width:16px;height:11px;border-radius:3px;display:inline-block}
+/* Uma cor por linha da tabela, com a chance embaixo. Largura minima pequena e
+   fonte de 10 px para as nove caberem numa linha no celular (~290 px). */
+.legenda .lg-it{display:inline-flex;flex-direction:column;align-items:center;gap:3px;min-width:28px}
+.legenda .lg-it b{font-size:10px;font-weight:500;font-variant-numeric:tabular-nums}
+.legenda .lg-fim{align-self:flex-end;margin-left:4px}
 .bars{display:grid;gap:10px;margin-top:4px}
 /* Coluna da direita alargada de 104 para 128 px: agora ela leva duas linhas
    de texto ("88% preveem chuva", "62% de chance") alem dos milimetros. */
@@ -456,18 +461,14 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 
   <div class="card">
     <h2>Probabilidade de chuva, hora a hora</h2>
-    <p class="hint">Cada c&eacute;lula &eacute; uma hora. A cor mostra quantas das 8 fam&iacute;lias de modelo,
-      independentes entre si, preveem chuva. Passe o mouse para os detalhes.</p>
+    <p class="hint">Cada c&eacute;lula &eacute; uma hora. A cor &eacute; a <b>chance de chover</b> naquela hora,
+      lida na tabela de calibra&ccedil;&atilde;o do painel a partir de quantas das 8 fam&iacute;lias de modelo
+      preveem chuva. Passe o mouse para os detalhes.</p>
     <div class="hm" id="hm"></div>
-    <div class="legenda">
-      <span>0 de 8</span>
-      <i style="background:var(--s0)"></i><i style="background:var(--s1)"></i>
-      <i style="background:var(--s2)"></i><i style="background:var(--s3)"></i>
-      <i style="background:var(--s4)"></i><i style="background:var(--s5)"></i>
-      <i style="background:var(--s6)"></i><i style="background:var(--s7)"></i>
-      <i style="background:var(--s8)"></i>
-      <span>8 de 8 preveem chuva</span>
-    </div>
+    <!-- Preenchida pelo JS a partir da tabela de calibracao: cada cor e uma
+         linha dela (0 a 8 de 8 familias), e o numero embaixo acompanha sozinho
+         quando a tabela muda de madrugada. -->
+    <div class="legenda" id="hmLeg"></div>
   </div>
 
   <div class="card">
@@ -785,10 +786,6 @@ function freqMedida(prob){
   }
   return melhor;
 }
-const pctMedida = (prob) => {
-  const c = freqMedida(prob);
-  return c ? Math.round(100 * (+c.freq_observada)) : null;
-};
 
 // ----------------------------------------------------------------- render
 function renderHero(linhas){
@@ -986,13 +983,29 @@ function renderHeatmap(linhas){
     const k = Math.round(+d.prob_chuva * FAMILIAS);
     mostrarTip(e,
       dd(t.getHours()) + ":00 &middot; " + diaSem[t.getDay()] + " " + t.getDate(),
-      k + " de " + FAMILIAS + " fam&iacute;lias preveem chuva" +
-      (pctMedida(+d.prob_chuva) === null ? ""
-        : " &middot; medido: " + pctMedida(+d.prob_chuva) + "% viraram chuva") + "<br>" +
+      (chanceTabela(k, FAMILIAS)
+        // Sem <br> depois: no #tip o <b> ja e bloco, e o <br> abria linha vazia.
+        ? "<b>" + chanceTabela(k, FAMILIAS).txt + "% de chance de chuva</b>" : "") +
+      k + " de " + FAMILIAS + " fam&iacute;lias preveem chuva<br>" +
       "mediana " + nf(d.precip_mediana) + " mm &middot; max " + nf(d.precip_max) + " mm<br>" +
       "dispers&atilde;o " + nf(d.dispersao_precip) + " mm &middot; rajada " + Math.round(d.rajada_max) + " km/h");
   };
   hm.onmouseleave = esconderTip;
+  renderLegendaChance();
+}
+
+// As cores do mapa NAO mudaram: as nove ja eram uma por linha da tabela
+// (0 a 8 de 8 familias). O que muda e o que se diz delas: embaixo de cada cor,
+// a chance daquela linha. Mesma tabela do topo, das barras e da coluna da
+// tabela de texto — um numero so para a mesma hora em todo o painel.
+function renderLegendaChance(){
+  const el = $("#hmLeg");
+  if (!el) return;
+  el.innerHTML = Array.from({ length: FAMILIAS + 1 }, function (_, k){
+    const ch = chanceTabela(k, FAMILIAS);
+    return '<span class="lg-it" title="' + k + " de " + FAMILIAS + ' fam&iacute;lias preveem chuva">' +
+      '<i style="background:var(--s' + k + ')"></i><b>' + (ch ? ch.txt + "%" : "&ndash;") + "</b></span>";
+  }).join("") + '<span class="lg-fim">de chance de chuva na hora</span>';
 }
 
 function renderBarras(dias){
