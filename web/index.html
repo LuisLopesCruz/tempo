@@ -54,6 +54,11 @@ header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content
 h1{font-size:19px;font-weight:640;letter-spacing:-.01em;margin:0}
 h1 span{color:var(--ink-muted);font-weight:400}
 .meta{font-size:12px;color:var(--ink-muted);font-variant-numeric:tabular-nums}
+/* Aviso de fonte atrasada. Fica no TOPO porque o defeito que o motivou — 53 h
+   de avisos do INMET perdidos, 08 a 12/10 — passou 4 dias sem ninguem ver:
+   aviso escondido no rodape repetiria o erro. Diz a CONSEQUENCIA ("podem
+   faltar avisos"), nao so o nome da fonte. */
+.saude{margin-top:6px;font-size:12px;color:var(--warning);line-height:1.45}
 .card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:18px;margin-bottom:16px}
 .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px}
 select,button{font:inherit;color:var(--ink);background:var(--surface);
@@ -376,6 +381,7 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
   <header>
     <h1>TEMPO&#8209;RJ <span>&middot; previs&atilde;o consolidada</span></h1>
     <div class="meta" id="meta">carregando&hellip;</div>
+    <div class="saude" id="saude" hidden></div>
   </header>
 
   <div class="controls">
@@ -584,6 +590,7 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
       abaixo, inclusive quando ela &eacute; desfavor&aacute;vel &mdash; e hoje ela &eacute;.
     </p>
     <p class="aviso" id="statusSkill" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--grid)"></p>
+    <p class="aviso" id="saudeFontes" style="margin-top:8px;color:var(--ink-muted)"></p>
     <button class="ghost" id="btnApr" type="button" aria-expanded="false"
             style="margin-top:12px;font-size:12.5px;padding:6px 10px">Ver o andamento e o desempenho</button>
     <div id="aprWrap" hidden style="margin-top:14px">
@@ -1418,6 +1425,29 @@ async function carregarStatus(){
   } catch (e) { console.error(e); }
 }
 
+// Saude das coletas. Cada fonte e medida pelo ULTIMO SUCESSO dela (view
+// tempo_saude). Atrasada -> aviso no topo com a consequencia. Em dia -> so a
+// linha do monitor: ausencia de problema tambem precisa aparecer (5.8), senao
+// "nao ha aviso" e "o aviso nao carregou" ficam iguais.
+const idade = (h) => h == null ? "sem registro em 7 dias"
+  : h < 1 ? "h&aacute; menos de 1 h"
+  : h < 48 ? "h&aacute; " + Math.round(h) + " h"
+  : "h&aacute; " + Math.round(h / 24) + " dias";
+
+async function carregarSaude(){
+  try {
+    const f = await api("/tempo_saude?select=rotulo,efeito,horas,atrasada&order=ordem.asc");
+    const atras = f.filter((x) => x.atrasada);
+    const topo = $("#saude");
+    topo.innerHTML = atras.map((x) => "&#9888; " + x.rotulo + " sem atualizar " +
+      idade(x.horas == null ? null : +x.horas) + " &mdash; " + x.efeito + ".").join("<br>");
+    topo.hidden = !atras.length;
+    $("#saudeFontes").innerHTML = "<b>&Uacute;ltima coleta bem-sucedida:</b> " + f.map((x) =>
+      (x.atrasada ? '<span style="color:var(--warning)">' : "<span>") + x.rotulo + " " +
+      idade(x.horas == null ? null : +x.horas) + "</span>").join(" &middot; ");
+  } catch (e) { console.error(e); }
+}
+
 async function carregar(pontoId){
   ls.set("tempo_mun", pontoId);
   $("#meta").textContent = "carregando...";
@@ -1681,6 +1711,7 @@ async function init(){
   await carregarCalibracao();
   await carregar(MUN_ID);
   carregarStatus();
+  carregarSaude();
   carregarPanorama();
 }
 
