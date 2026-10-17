@@ -24,6 +24,15 @@ const PAUSA_MS = 400;      // gentileza com a API gratuita
 const PAUSA_RETRY_MS  = 15_000;
 const LIMITE_RETRY_MS = 105_000;   // depois disto nao comeca nova tentativa
 
+// Prazo de cada requisicao. Sem ele, um lote que a Open-Meteo aceita e nao
+// responde segura a execucao ate os 150 s e ela morre sem log: 15, 16 e 17/10
+// 00h (0 de 736) e 17/10 12h (160 de 736), todas com CPU < 70 ms — so espera.
+// Um lote normal leva 2-20 s. Com prazo, o lote preso vira falha comum, vai
+// para a segunda tentativa e o log sai sempre. PRAZO_MS e o teto absoluto
+// de qualquer busca, deixando folga para gravar e registrar o log.
+const TIMEOUT_LOTE_MS = 30_000;
+const PRAZO_MS        = 135_000;
+
 // O valor vive num secret do Supabase, nao aqui: ate 2026-10-02 ficava em
 // texto claro neste arquivo (risco R9), o que com o repositorio criado passou a
 // significar segredo no historico do git — que nao se apaga. Rotacionado na
@@ -107,7 +116,10 @@ Deno.serve(async (req: Request) => {
         + `&forecast_days=${FORECAST_DAYS}`
         + `&timezone=UTC`;
 
-      const resp = await fetch(url);
+      const folga = PRAZO_MS - (Date.now() - t0);
+      if (folga < 5_000) throw new Error("sem folga no prazo da execucao");
+      // O sinal cobre tambem a leitura do corpo (resp.json()), nao so a conexao.
+      const resp = await fetch(url, { signal: AbortSignal.timeout(Math.min(TIMEOUT_LOTE_MS, folga)) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status} ${(await resp.text()).slice(0, 160)}`);
       const body = await resp.json();
       // Resposta multi-ponto é SEMPRE um array na MESMA ORDEM do pedido.
