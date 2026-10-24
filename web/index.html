@@ -1471,15 +1471,20 @@ const idade = (h) => h == null ? "sem registro em 7 dias"
 
 async function carregarSaude(){
   try {
-    const f = await api("/tempo_saude?select=rotulo,efeito,horas,atrasada&order=ordem.asc");
-    const atras = f.filter((x) => x.atrasada);
+    const f = await api("/tempo_saude?select=rotulo,efeito,horas,atrasada,no_topo,obs&order=ordem.asc");
+    // O topo e so para o que compromete o que o leitor ve: fonte parada COM
+    // reserva funcionando (Alerta Rio, coberto pelo CEMADEN no ponto do Rio)
+    // fica so no monitor. Em 22-24/10 o topo dizia "a chuva medida esta
+    // defasada" enquanto o Rio seguia medido hora a hora — aviso falso.
+    const atras = f.filter((x) => x.no_topo);
     const topo = $("#saude");
     topo.innerHTML = atras.map((x) => "&#9888; " + x.rotulo + " sem atualizar " +
       idade(x.horas == null ? null : +x.horas) + " &mdash; " + x.efeito + ".").join("<br>");
     topo.hidden = !atras.length;
     $("#saudeFontes").innerHTML = "<b>&Uacute;ltima coleta bem-sucedida:</b> " + f.map((x) =>
       (x.atrasada ? '<span style="color:var(--warning)">' : "<span>") + x.rotulo + " " +
-      idade(x.horas == null ? null : +x.horas) + "</span>").join(" &middot; ");
+      idade(x.horas == null ? null : +x.horas) + (x.obs ? " (" + x.obs + ")" : "") +
+      "</span>").join(" &middot; ");
   } catch (e) { console.error(e); }
 }
 
