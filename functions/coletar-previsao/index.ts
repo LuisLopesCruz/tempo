@@ -21,19 +21,16 @@ const PAUSA_MS = 400;      // gentileza com a API gratuita
 // pausa, e so enquanto houver folga para terminar antes do limite de 150 s da
 // Edge Function: passar dele mata a execucao SEM gravar log (08/10 06h nao
 // deixou rastro), o que e pior do que perder o lote.
-const PAUSA_RETRY_MS  = 5_000;
+const PAUSA_RETRY_MS  = 15_000;
 const LIMITE_RETRY_MS = 105_000;   // depois disto nao comeca nova tentativa
 
 // Prazo de cada requisicao. Sem ele, um lote que a Open-Meteo aceita e nao
 // responde segura a execucao ate os 150 s e ela morre sem log: 15, 16 e 17/10
 // 00h (0 de 736) e 17/10 12h (160 de 736), todas com CPU < 70 ms — so espera.
-// Um lote normal leva menos de 10 s. Com prazo, o lote preso vira falha comum,
-// vai para a segunda tentativa e o log sai sempre. PRAZO_MS e o teto absoluto
+// Um lote normal leva 2-20 s. Com prazo, o lote preso vira falha comum, vai
+// para a segunda tentativa e o log sai sempre. PRAZO_MS e o teto absoluto
 // de qualquer busca, deixando folga para gravar e registrar o log.
-// 30 s -> 20 s (e pausa da 2a tentativa 15 s -> 5 s) em 2026-10-23: em 20/10
-// 12h tres lotes presos de 30 s cada esgotaram o prazo e nenhum teve 2a
-// tentativa (256 de 736). Com 20 s, ate tres lotes presos ainda deixam folga.
-const TIMEOUT_LOTE_MS = 20_000;
+const TIMEOUT_LOTE_MS = 30_000;
 const PRAZO_MS        = 135_000;
 
 // O valor vive num secret do Supabase, nao aqui: ate 2026-10-02 ficava em
