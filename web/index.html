@@ -263,6 +263,20 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 .alerta.dc-moderado .agora{background:var(--warning);color:#2b2000}
 .alerta.dc-alto .agora{background:var(--serious);color:#2b1200}
 .alerta.dc-muito_alto .agora, .alerta.dc-desconhecido .agora{background:var(--critical);color:#fff}
+/* Trovoada (REDEMET): a MESMA rampa, pelo mesmo motivo da Defesa Civil.
+   Cinza = sem trovoada (ou sem dado), amarelo = por perto, laranja = a
+   caminho, vermelho = no municipio. */
+.tv-nenhuma .ic, .tv-sem_dado .ic{color:var(--ink-muted)}
+.tv-perto .ic{color:var(--warning)}
+.tv-a_caminho .ic{color:var(--serious)}
+.tv-no_municipio .ic{color:var(--critical)}
+.tv-nenhuma .selo, .tv-sem_dado .selo{border-color:var(--ink-muted);color:var(--ink-muted)}
+.tv-perto .selo{border-color:var(--warning);color:var(--warning)}
+.tv-a_caminho .selo{border-color:var(--serious);color:var(--serious)}
+.tv-no_municipio .selo{border-color:var(--critical);color:var(--critical)}
+.alerta.tv-perto .agora{background:var(--warning);color:#2b2000}
+.alerta.tv-a_caminho .agora{background:var(--serious);color:#2b1200}
+.alerta.tv-no_municipio .agora{background:var(--critical);color:#fff}
 /* Separa visualmente a fonte sem inventar uma segunda escala de cor. */
 .rdc{border-bottom:1px solid var(--grid);margin-bottom:2px}
 .rdc .fonte{font-size:11.5px;color:var(--ink-muted)}
@@ -408,7 +422,8 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 
   <div class="card" id="cardAlertas" hidden>
     <h2>Alertas oficiais vigentes</h2>
-    <p class="hint">Do INMET e da Defesa Civil do RJ. N&atilde;o entram no c&aacute;lculo da
+    <p class="hint">Do INMET, da Defesa Civil do RJ e da REDEMET (trovoada detectada,
+      atualizada a cada 6&nbsp;min). N&atilde;o entram no c&aacute;lculo da
       probabilidade &mdash; &oacute;rg&atilde;o oficial <b>sobrep&otilde;e</b> a previs&atilde;o,
       n&atilde;o vota nela.</p>
     <div class="legal rampa">
@@ -425,11 +440,17 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
       <b><i style="background:var(--warning)"></i>Moderado</b>
       <b><i style="background:var(--serious)"></i>Alto</b>
       <b><i style="background:var(--critical)"></i>Muito alto</b>
+      <span class="rot">Trovoada</span>
+      <b><i style="background:var(--ink-muted)"></i>Sem trovoada</b>
+      <b><i style="background:var(--warning)"></i>Por perto</b>
+      <b><i style="background:var(--serious)"></i>A caminho</b>
+      <b><i style="background:var(--critical)"></i>No munic&iacute;pio</b>
     </div>
     <div class="legal fim">
       <b><span class="amostra">cheio</span>em vigor agora</b>
       <b><span class="amostra fraca">esmaecido</span>a seguir</b>
     </div>
+    <div id="trovoada"></div>
     <div id="riscoDC"></div>
     <div id="alertas"></div>
     <div id="alertasResto" hidden></div>
@@ -1240,29 +1261,85 @@ function linhaRisco(dc){
   }).join("") + '</div>';
 }
 
+// Trovoada detectada (REDEMET/STSC), aviso de CURTISSIMO prazo — nao e
+// previsao. A regra (D15) roda no coletor; aqui so se le o estado. Sempre
+// mostra o estado vigente, como a Defesa Civil: "sem trovoada a 50 km" e
+// informacao para quem acabou de ouvir trovao.
+const TV_ROTULO = { nenhuma: "Sem trovoada", perto: "Por perto", a_caminho: "A caminho",
+                    no_municipio: "No município", sem_dado: "Sem dado" };
+function linhaTrovoada(t){
+  if (!t) return "";
+  const hm = (iso) => { const d = new Date(iso); return dd(d.getHours()) + "h" + dd(d.getMinutes()); };
+  const km = (v) => "~" + Math.round(v) + " km";
+  let qd;
+  if (t.situacao === "no_municipio"){
+    qd = "célula de trovoada a até 10 km nos últimos 20 min";
+  } else if (t.situacao === "a_caminho"){
+    const futura = t.chegada_em && new Date(t.chegada_em).getTime() > Date.now();
+    qd = (t.dist_km != null ? "a " + km(t.dist_km) : "a menos de 50 km") +
+         (t.velocidade_kmh ? ", aproximando-se a ~" + Math.round(t.velocidade_kmh) + " km/h" : "") +
+         (t.chegada_em ? (futura ? " · chegada estimada ~" + hm(t.chegada_em) : " · chegada iminente") : "");
+  } else if (t.situacao === "perto"){
+    qd = (t.dist_km != null && t.dist_km <= 50 ? "a " + km(t.dist_km) : "a até 50 km na última hora") +
+         ", sem se aproximar";
+  } else if (t.situacao === "sem_dado"){
+    qd = "sem leitura recente da REDEMET";
+  } else {
+    qd = "nenhuma a até 50 km na última hora";
+  }
+  const ativa = t.situacao === "perto" || t.situacao === "a_caminho" || t.situacao === "no_municipio";
+  return '<div class="rdc"><div class="alerta tv-' + t.situacao + '">' +
+    // ︎ pede o raio como TEXTO, nao emoji: so assim a cor da rampa pega.
+    '<div class="ic">⚡︎</div>' +
+    '<div><div class="tt">Trovoada' +
+      '<span class="selo">' + (TV_ROTULO[t.situacao] || t.situacao) + '</span>' +
+      (ativa ? '<span class="agora">agora</span>' : '') + '</div>' +
+    '<div class="qd">' + qd + '</div>' +
+    '<div class="qd"><span class="fonte">REDEMET (DECEA)</span>' +
+      (t.quadro ? ' · leitura das ' + hm(t.quadro) : '') + '</div>' +
+    '</div></div></div>';
+}
+
+// O resto do cartao carrega uma vez por municipio; a trovoada muda a cada
+// 6 min, entao so ela se recarrega sozinha enquanto a pagina esta aberta.
+let IBGE_TROVOADA = null;
+async function carregarTrovoada(ibge){
+  const tv = await api("/tempo_trovoada?municipio_ibge=eq." + ibge +
+    "&select=situacao,dist_km,velocidade_kmh,chegada_em,quadro").catch(() => []);
+  if (ibge !== IBGE_TROVOADA) return "";           // trocou de municipio no meio
+  const html = linhaTrovoada(tv[0]);
+  $("#trovoada").innerHTML = html;
+  if (html) $("#cardAlertas").hidden = false;
+  return html;
+}
+setInterval(() => { if (IBGE_TROVOADA && !document.hidden) carregarTrovoada(IBGE_TROVOADA); }, 3 * 60 * 1000);
+
 async function carregarAlertas(ibge){
   const card = $("#cardAlertas");
+  IBGE_TROVOADA = ibge;
   try {
-    // As duas fontes em paralelo. O .catch do risco e deliberado: se a view
+    // As fontes em paralelo. O .catch do risco e deliberado: se a view
     // falhar, os avisos do INMET continuam aparecendo — uma fonte nova nao
-    // pode derrubar a que ja funcionava.
-    const [av, dc] = await Promise.all([
+    // pode derrubar a que ja funcionava. A trovoada tem o seu proprio .catch.
+    const [av, dc, htmlTv] = await Promise.all([
       api("/tempo_alertas_municipio?municipio_ibge=eq." + ibge +
         "&select=severidade,evento,inicio,fim,descricao,riscos,severidade_fonte,cor_fonte" +
         "&order=severidade.desc,inicio.asc"),
       api("/tempo_risco_defesa_civil?municipio_ibge=eq." + ibge +
         "&select=tipo,nivel,nivel_fonte,prioridade,atualizado_fonte").catch(() => []),
+      carregarTrovoada(ibge),
     ]);
     const htmlRisco = linhaRisco(dc);
     $("#riscoDC").innerHTML = htmlRisco;
 
     // Sem aviso do INMET o cartao NAO some mais: pode haver risco da Defesa
-    // Civil sozinho, que era justamente o caso que o codigo antigo escondia.
+    // Civil ou trovoada sozinhos, que era justamente o caso que o codigo
+    // antigo escondia.
     if (!av.length){
       $("#alertas").innerHTML = "";
       $("#alertasResto").innerHTML = "";
       $("#maisAlertas").hidden = true;
-      card.hidden = !htmlRisco;
+      card.hidden = !htmlRisco && !htmlTv;
       return;
     }
     // ordena por gravidade real, nao alfabetica
