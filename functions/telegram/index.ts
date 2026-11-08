@@ -462,7 +462,8 @@ async function avisosTodos() {
 type MunB = { municipio: string; k6: number; chance6: number | null; k_forte: number;
   mm24: number | null; p25_24: number | null; p75_24: number | null; raj24: number | null;
   tmax: number | null; tmin: number | null; mm_hoje: number | null; mm_mes: number | null;
-  normal_mes: number | null; risco_hoje: string | null; risco_amanha: string | null };
+  normal_mes: number | null; risco_hoje: string | null; risco_amanha: string | null;
+  risco_hoje_p: number | null; risco_amanha_p: number | null };
 type RegB = { regiao: string; muns: MunB[]; inmet: { descricao: string; severidade: string; fim: string | null; n: number }[];
   dc: { tipo: string; nivel: string; muns: string[] }[] };
 
@@ -497,13 +498,23 @@ function quando(iso: string | null): string {
 }
 
 // Risco: lista os municipios dos niveis mais altos; o nivel de baixo, que
-// cobre todo o resto, vira "demais" (como no modelo aprovado).
+// cobre todo o resto, vira "demais" (como no modelo aprovado). Cada nivel leva
+// a chance de dia ruim (pedido do usuario, 08/11). Ela vem em FAIXAS, como no
+// painel: no mesmo nivel costuma ser o mesmo numero, entao sai uma vez por
+// nivel; se variar, sai o maior ("ate X%").
+function chanceDiaRuim(ps: (number | null)[]): string {
+  const v = ps.filter((p): p is number => p != null).map((p) => Math.round(100 * p));
+  if (!v.length) return "";
+  const mx = Math.max(...v), mn = Math.min(...v);
+  return ` — ${mx === mn ? "" : "até "}${mx}% de chance de dia ruim`;
+}
 function linhasRisco(ms: MunB[]): string[] {
   const nv = (m: MunB) => (m.risco_hoje && RISCO[m.risco_hoje]) ? m.risco_hoje : null;
   const presentes = ["alto", "elevado", "moderado", "normal"].filter((k) => ms.some((m) => nv(m) === k));
   if (!presentes.length) return ["sem cálculo para hoje"];
-  if (presentes.length === 1) return [`${RISCO[presentes[0]][0]} ${RISCO[presentes[0]][1]}: todos os municípios`];
-  return presentes.map((k, i) => `${RISCO[k][0]} ${RISCO[k][1]}: ` + (i === presentes.length - 1 ? "demais"
+  const ch = (k: string) => chanceDiaRuim(ms.filter((m) => nv(m) === k).map((m) => m.risco_hoje_p));
+  if (presentes.length === 1) return [`${RISCO[presentes[0]][0]} ${RISCO[presentes[0]][1]}${ch(presentes[0])}: todos os municípios`];
+  return presentes.map((k, i) => `${RISCO[k][0]} ${RISCO[k][1]}${ch(k)}: ` + (i === presentes.length - 1 ? "demais"
     : ms.filter((m) => nv(m) === k).map((m) => esc(m.municipio)).join(", ")));
 }
 
@@ -662,8 +673,9 @@ function cardMunicipio(m: any): string {
       L.push(`No mês: ${nf(m.mm_mes, 0)} mm = <b>${pctMes(m.mm_mes, m.normal_mes)} do previsto para o mês</b>`);
     }
   }
-  const rv = (n: string | null) => n && RISCO[n] ? `${RISCO[n][0]} ${RISCO[n][1]}` : "sem cálculo";
-  L.push("", "⚡ <b>Risco elétrico</b>", `Hoje: ${rv(m.risco_hoje)} · Amanhã: ${rv(m.risco_amanha)}`);
+  const rv = (n: string | null, p: number | null) =>
+    n && RISCO[n] ? `${RISCO[n][0]} ${RISCO[n][1]}` + (p != null ? ` — ${Math.round(100 * p)}% de chance de dia ruim` : "") : "sem cálculo";
+  L.push("", "⚡ <b>Risco elétrico</b>", `Hoje: ${rv(m.risco_hoje, m.risco_hoje_p)}`, `Amanhã: ${rv(m.risco_amanha, m.risco_amanha_p)}`);
   L.push("", "<b>Trovoada agora</b>", linhaTrovoada(m.trovoada));
   L.push("", "<b>Alertas em vigor</b>");
   const porDesc = new Map<string, any>();

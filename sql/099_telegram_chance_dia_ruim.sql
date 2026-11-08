@@ -1,0 +1,7 @@
+-- 099 — Boletim e card de municipio passam a levar a CHANCE DE DIA RUIM do
+-- risco eletrico (pedido do usuario, 08/11), a mesma do painel ("X% de chance
+-- de ser um dia ruim"): campos risco_hoje_p e risco_amanha_p (prob_dia_ruim de
+-- tempo_risco_energia) em tempo_tg_boletim() e tempo_tg_municipio().
+-- No boletim de regiao o join com o risco passou a ser feito uma vez (cte re
+-- com prob_dia_ruim) em vez de duas subconsultas por municipio. 3,8 s para os 92.
+-- Texto integral aplicado: historico de migrations do Supabase (099).
