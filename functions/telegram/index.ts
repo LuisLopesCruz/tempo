@@ -395,6 +395,13 @@ const DC_TIPO: Record<string, string> = { geologico: "Risco geológico (deslizam
 const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
                "setembro", "outubro", "novembro", "dezembro"];
 
+// "Previsto para o mes" = a normal climatologica do mes (1991-2020), a mesma
+// do painel. Palavras do usuario (08/11): "% do previsto para o mes".
+function pctMes(mm: number | null | undefined, normal: number | null | undefined): string {
+  if (!normal || mm == null) return "–";
+  const p = 100 * mm / normal;
+  return p > 0 && p < 1 ? "<1%" : `${Math.round(p)}%`;
+}
 function pior<T>(xs: T[], v: (x: T) => number | null | undefined): T | null {
   let m: T | null = null, mv = -Infinity;
   for (const x of xs) { const y = v(x); if (y != null && y > mv) { mv = y; m = x; } }
@@ -435,19 +442,21 @@ function cardRegiao(r: RegB, rotuloHora: string): string {
   L.push(`⛅ <b>TEMPO-RJ · ${esc(r.regiao)}</b> · boletim ${rotuloHora}`, "");
   L.push("<b>Próximas 6 h</b>");
   L.push(`${p6.k6} de 8 famílias preveem chuva (${Math.round(100 * p6.k6 / 8)}%) → ` +
-         (p6.chance6 != null ? `<b>${nf(100 * p6.chance6)}% de chance</b>` : "tabela de chance indisponível"), "");
+         (p6.chance6 != null ? `<b>${nf(100 * p6.chance6)}% de chance</b> de virar chuva realmente` : "tabela de chance indisponível"), "");
   L.push("<b>Próximas 24 h</b>");
   L.push(`Chuva forte: ${kf} de 8 famílias`);
   L.push(`Previsto ~${nf(mm.mm24 ?? 0)} mm` +
          (mm.p25_24 != null && mm.p75_24 != null ? ` (metade central: ${nf(mm.p25_24)}–${nf(mm.p75_24)} mm)` : ""));
+  if (mm.normal_mes) L.push(`A previsão de ~${nf(mm.mm24 ?? 0)} mm para as próximas 24 h são ${pctMes(mm.mm24, mm.normal_mes)} do previsto para o mês`);
   L.push(`Rajada máxima ${Math.round(raj)} km/h` +
          (tmax > -99 ? ` · Temperatura ${Math.round(tmin)}–${Math.round(tmax)} °C` : ""), "");
   L.push("<b>Chuva medida</b>");
   if (!medHoje && !medMes) {
     L.push("sem pluviômetro com leitura nesta região");
   } else {
-    L.push(`Hoje até agora: ${nf(medHoje?.mm_hoje ?? 0)} mm`);
-    if (medMes) L.push(`No mês: ${nf(medMes.mm_mes!, 0)} mm = <b>${Math.round(100 * medMes.mm_mes! / medMes.normal_mes!)}% da normal</b> de ${mes}`);
+    L.push(`Hoje até agora: ${nf(medHoje?.mm_hoje ?? 0)} mm` +
+           (medHoje?.normal_mes ? ` = ${pctMes(medHoje.mm_hoje, medHoje.normal_mes)} do previsto para o mês` : ""));
+    if (medMes) L.push(`No mês: ${nf(medMes.mm_mes!, 0)} mm = <b>${pctMes(medMes.mm_mes, medMes.normal_mes)} do previsto para o mês</b>`);
   }
   L.push("", "⚡ <b>Risco elétrico hoje</b>", ...linhasRisco(ms), "", "<b>Alertas em vigor</b>");
   // mesmo aviso em dois niveis (amarelo para uns municipios, laranja para outros): fica o pior
@@ -554,20 +563,22 @@ function cardMunicipio(m: any): string {
   L.push(`📍 <b>TEMPO-RJ · ${esc(m.municipio)}</b> · ${esc(m.regiao)} · agora ${hm(new Date().toISOString())}`, "");
   L.push("<b>Próximas 6 h</b>");
   L.push(`${m.k6} de 8 famílias preveem chuva (${Math.round(100 * m.k6 / 8)}%) → ` +
-         (m.chance6 != null ? `<b>${nf(100 * m.chance6)}% de chance</b>` : "tabela de chance indisponível"), "");
+         (m.chance6 != null ? `<b>${nf(100 * m.chance6)}% de chance</b> de virar chuva realmente` : "tabela de chance indisponível"), "");
   L.push("<b>Próximas 24 h</b>");
   L.push(`Chuva forte: ${m.k_forte} de 8 famílias`);
   L.push(`Previsto ~${nf(m.mm24 ?? 0)} mm` +
          (m.p25_24 != null && m.p75_24 != null ? ` (metade central: ${nf(m.p25_24)}–${nf(m.p75_24)} mm)` : ""));
+  if (m.normal_mes) L.push(`A previsão de ~${nf(m.mm24 ?? 0)} mm para as próximas 24 h são ${pctMes(m.mm24, m.normal_mes)} do previsto para o mês`);
   L.push(`Rajada máxima ${Math.round(m.raj24 ?? 0)} km/h` +
          (m.tmax != null ? ` · Temperatura ${Math.round(m.tmin)}–${Math.round(m.tmax)} °C` : ""), "");
   L.push("<b>Chuva medida</b>");
   if (m.mm_mes == null && m.mm_hoje == null) {
     L.push("sem pluviômetro com leitura neste município");
   } else {
-    L.push(`Hoje até agora: ${nf(m.mm_hoje ?? 0)} mm`);
+    L.push(`Hoje até agora: ${nf(m.mm_hoje ?? 0)} mm` +
+           (m.normal_mes ? ` = ${pctMes(m.mm_hoje, m.normal_mes)} do previsto para o mês` : ""));
     if (m.mm_mes != null && m.normal_mes) {
-      L.push(`No mês: ${nf(m.mm_mes, 0)} mm = <b>${Math.round(100 * m.mm_mes / m.normal_mes)}% da normal</b> de ${mes}`);
+      L.push(`No mês: ${nf(m.mm_mes, 0)} mm = <b>${pctMes(m.mm_mes, m.normal_mes)} do previsto para o mês</b>`);
     }
   }
   const rv = (n: string | null) => n && RISCO[n] ? `${RISCO[n][0]} ${RISCO[n][1]}` : "sem cálculo";
