@@ -87,7 +87,8 @@ function resumoRegioes(u: { regioes: string[]; todas: boolean }) {
 
 const AJUDA =
   "<b>TEMPO-RJ</b> · avisos de tempo para o estado do Rio\n\n" +
-  "/boletim — boletim agora das suas regiões\n" +
+  "/boletim — boletim agora: de um município ou das suas regiões\n" +
+  "/boletim Petrópolis — direto para um município\n" +
   "/regioes — escolher as regiões que você acompanha\n" +
   "/parar — parar de receber avisos\n" +
   "/start — voltar a receber\n" +
@@ -144,9 +145,10 @@ async function conversa(upd: any) {
     await enviar(chat, "Toque para marcar ou desmarcar, depois em <b>Concluir</b>:",
                  { reply_markup: teclado(u.regioes, u.todas) });
   } else if (cmd === "/boletim") {
-    if (!u.todas && !u.regioes?.length) await enviar(chat, "Escolha as regiões primeiro: /regioes");
-    else if (u.status !== "ativo") await enviar(chat, "Avisos parados. Mande /start para voltar.");
-    else await boletim(chat);
+    // "/boletim Petropolis" vai direto; "/boletim" sozinho pergunta o que a pessoa quer
+    const termo = texto.replace(/^\/boletim(@\w+)?/i, "").trim();
+    if (termo) await buscarMunicipio(chat, termo);
+    else await enviar(chat, "Boletim de quê?", { reply_markup: MENU_BOLETIM });
   } else if (cmd === "/parar") {
     await rpc("tempo_tg_status", { p_chat: chat, p_status: "parado" });
     await enviar(chat, "Pronto, você não recebe mais avisos. Para voltar, mande /start.");
@@ -161,6 +163,8 @@ async function botao(q: any) {
   const resp = (texto?: string) => tg("answerCallbackQuery", { callback_query_id: q.id, text: texto });
   const u = await rpc("tempo_tg_get", { p_chat: chat });
   if (!u || u.status !== "ativo") { await resp("Acesso não liberado."); return; }
+
+  if (d.startsWith("b:")) return botaoBoletim(q, chat, d, u);
 
   if (d.startsWith("ap:") || d.startsWith("rc:")) {
     if (!u.admin) { await resp("Só o administrador aprova."); return; }
@@ -496,6 +500,146 @@ async function boletim(soChat?: number) {
   return { regioes: regs.length, enviados };
 }
 
+// ------------------------------------------------------------ /boletim de um municipio
+// Pedido do usuario em 08/11: escolher UM municipio e receber na hora a "foto
+// do que esta no site" para ele. Escolha em dois passos (regiao -> municipio):
+// 92 botoes numa lista so seriam impraticaveis no celular. Ou digitado:
+// "/boletim Petropolis", com ou sem acento.
+type MunInfo = { ibge: number; nome: string; regiao: string };
+const semAcento = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+
+function tecladoRegioesMun() {
+  const linhas: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < REGIOES.length; i += 2) {
+    linhas.push(REGIOES.slice(i, i + 2).map((r, k) => ({ text: r, callback_data: "b:r:" + (i + k) })));
+  }
+  return { inline_keyboard: linhas };
+}
+function tecladoMunicipios(muns: MunInfo[]) {
+  const linhas: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < muns.length; i += 2) {
+    linhas.push(muns.slice(i, i + 2).map((m) => ({ text: m.nome, callback_data: "b:m:" + m.ibge })));
+  }
+  linhas.push([{ text: "← Regiões", callback_data: "b:mun" }]);
+  return { inline_keyboard: linhas };
+}
+const MENU_BOLETIM = { inline_keyboard: [[
+  { text: "📍 Um município", callback_data: "b:mun" },
+  { text: "🗺️ Minhas regiões", callback_data: "b:reg" }]] };
+
+const NIVEL_DC: Record<string, [string, string]> = {
+  muito_baixo: ["⚪", "muito baixo"], baixo: ["⚪", "baixo"], moderado: ["🟡", "moderado"],
+  alto: ["🟠", "alto"], muito_alto: ["🔴", "muito alto"] };
+
+function linhaTrovoada(t: any): string {
+  if (!t) return "⚪ Sem leitura da REDEMET";
+  const km = (v: number | null) => v != null ? `~${Math.round(v)} km` : "menos de 50 km";
+  switch (t.situacao) {
+    case "no_municipio": return "🔴 <b>No município</b> (descarga a até 10 km nos últimos 20 min)";
+    case "a_caminho": {
+      const partes = [`🟠 <b>A caminho</b>: a ${km(t.dist_km)}`];
+      if (t.chegada_em && new Date(t.chegada_em).getTime() > Date.now()) partes.push(`chegada ~${hm(t.chegada_em)}`);
+      if (t.vem_de) partes.push(`vindo de ${t.vem_de}` + (t.velocidade_kmh ? ` a ~${Math.round(t.velocidade_kmh)} km/h` : ""));
+      return partes.join(" · ");
+    }
+    case "perto": return `🟡 <b>Por perto</b>: a ${t.dist_km != null && t.dist_km <= 50 ? km(t.dist_km) : "até 50 km"}, sem se aproximar`;
+    case "sem_dado": return "⚪ Sem leitura recente da REDEMET";
+    default: return "⚪ Sem trovoada a até 50 km";
+  }
+}
+
+function cardMunicipio(m: any): string {
+  const mes = MESES[new Date(Date.now() - 3 * 3_600_000).getUTCMonth()];
+  const L: string[] = [];
+  L.push(`📍 <b>TEMPO-RJ · ${esc(m.municipio)}</b> · ${esc(m.regiao)} · agora ${hm(new Date().toISOString())}`, "");
+  L.push("<b>Próximas 6 h</b>");
+  L.push(`${m.k6} de 8 famílias preveem chuva (${Math.round(100 * m.k6 / 8)}%) → ` +
+         (m.chance6 != null ? `<b>${nf(100 * m.chance6)}% de chance</b>` : "tabela de chance indisponível"), "");
+  L.push("<b>Próximas 24 h</b>");
+  L.push(`Chuva forte: ${m.k_forte} de 8 famílias`);
+  L.push(`Previsto ~${nf(m.mm24 ?? 0)} mm` +
+         (m.p25_24 != null && m.p75_24 != null ? ` (metade central: ${nf(m.p25_24)}–${nf(m.p75_24)} mm)` : ""));
+  L.push(`Rajada máxima ${Math.round(m.raj24 ?? 0)} km/h` +
+         (m.tmax != null ? ` · Temperatura ${Math.round(m.tmin)}–${Math.round(m.tmax)} °C` : ""), "");
+  L.push("<b>Chuva medida</b>");
+  if (m.mm_mes == null && m.mm_hoje == null) {
+    L.push("sem pluviômetro com leitura neste município");
+  } else {
+    L.push(`Hoje até agora: ${nf(m.mm_hoje ?? 0)} mm`);
+    if (m.mm_mes != null && m.normal_mes) {
+      L.push(`No mês: ${nf(m.mm_mes, 0)} mm = <b>${Math.round(100 * m.mm_mes / m.normal_mes)}% da normal</b> de ${mes}`);
+    }
+  }
+  const rv = (n: string | null) => n && RISCO[n] ? `${RISCO[n][0]} ${RISCO[n][1]}` : "sem cálculo";
+  L.push("", "⚡ <b>Risco elétrico</b>", `Hoje: ${rv(m.risco_hoje)} · Amanhã: ${rv(m.risco_amanha)}`);
+  L.push("", "<b>Trovoada agora</b>", linhaTrovoada(m.trovoada));
+  L.push("", "<b>Alertas em vigor</b>");
+  const porDesc = new Map<string, any>();
+  for (const a of m.inmet ?? []) {
+    const at = porDesc.get(a.descricao);
+    if (!at || (SEV[a.severidade]?.[1] ?? 4) > (SEV[at.severidade]?.[1] ?? 4)) porDesc.set(a.descricao, a);
+  }
+  const al = [...porDesc.values()].sort((a, b) => (SEV[b.severidade]?.[1] ?? 4) - (SEV[a.severidade]?.[1] ?? 4));
+  for (const a of al) L.push(`${(SEV[a.severidade] ?? ["⚠️"])[0]} INMET · ${esc(a.descricao)}${quando(a.fim)}`);
+  if (!al.length) L.push("INMET: nenhum");
+  // Defesa Civil: os dois riscos sempre, em qualquer nivel — como no painel
+  for (const tipo of ["hidrologico", "geologico"]) {
+    const d = (m.dc ?? []).find((x: any) => x.tipo === tipo);
+    const nv = d ? (NIVEL_DC[d.nivel] ?? ["⚠️", d.nivel]) : ["⚪", "sem dado"];
+    L.push(`${nv[0]} Defesa Civil · ${DC_TIPO[tipo]}: ${nv[1]}`);
+  }
+  L.push("", "<i>detalhes em tempo-rj.vercel.app</i>");
+  return L.join("\n");
+}
+
+async function boletimMunicipio(chat: number, ibge: number) {
+  const m = await rpc("tempo_tg_municipio", { p_ibge: ibge });
+  if (!m) { await enviar(chat, "Não encontrei esse município."); return; }
+  await enviar(chat, cardMunicipio(m));
+  await rpc("tempo_tg_log", { p_chat: chat, p_tipo: "boletim_municipio", p_regiao: m.regiao, p_ok: true, p_erro: null });
+}
+
+// "/boletim <nome>": acha o municipio pelo nome, sem acento e sem caixa.
+async function buscarMunicipio(chat: number, termo: string) {
+  const todos = (await rpc("tempo_tg_municipios")) as MunInfo[];
+  const t = semAcento(termo);
+  const exato = todos.filter((m) => semAcento(m.nome) === t);
+  const achados = exato.length ? exato : todos.filter((m) => semAcento(m.nome).includes(t));
+  if (achados.length === 1) return boletimMunicipio(chat, achados[0].ibge);
+  if (achados.length > 1 && achados.length <= 12) {
+    await enviar(chat, `Encontrei ${achados.length} municípios. Qual deles?`, { reply_markup: tecladoMunicipios(achados) });
+    return;
+  }
+  await enviar(chat, `Não encontrei "${esc(termo)}". Escolha a região:`, { reply_markup: tecladoRegioesMun() });
+}
+
+// Botoes do /boletim (callback_data "b:...")
+async function botaoBoletim(q: any, chat: number, d: string, u: any) {
+  const resp = (texto?: string) => tg("answerCallbackQuery", { callback_query_id: q.id, text: texto });
+  const msgId = q.message.message_id;
+  if (d === "b:reg") {
+    await resp();
+    if (!u.todas && !u.regioes?.length) { await enviar(chat, "Escolha as regiões primeiro: /regioes"); return; }
+    await boletim(chat);
+  } else if (d === "b:mun") {
+    await resp();
+    await tg("editMessageText", { chat_id: chat, message_id: msgId, parse_mode: "HTML",
+      text: "📍 Escolha a <b>região</b> do município:", reply_markup: tecladoRegioesMun() });
+  } else if (d.startsWith("b:r:")) {
+    const reg = REGIOES[Number(d.slice(4))];
+    const todos = (await rpc("tempo_tg_municipios")) as MunInfo[];
+    await resp();
+    await tg("editMessageText", { chat_id: chat, message_id: msgId, parse_mode: "HTML",
+      text: `📍 <b>${esc(reg ?? "")}</b> — escolha o município:`,
+      reply_markup: tecladoMunicipios(todos.filter((m) => m.regiao === reg)) });
+  } else if (d.startsWith("b:m:")) {
+    await resp("Montando o boletim…");
+    await boletimMunicipio(chat, Number(d.slice(4)));
+  } else {
+    await resp();
+  }
+}
+
 // ------------------------------------------------------------ configurar (1 vez)
 async function configurar() {
   const eu = await tg("getMe", {});
@@ -504,7 +648,7 @@ async function configurar() {
                            allowed_updates: ["message", "callback_query"],
                            drop_pending_updates: false });   // o /start que ja esta na fila vale
   await tg("setMyCommands", { commands: [
-    { command: "boletim", description: "Boletim agora das suas regiões" },
+    { command: "boletim", description: "Boletim agora: um município ou suas regiões" },
     { command: "regioes", description: "Escolher as regiões que você acompanha" },
     { command: "parar", description: "Parar de receber avisos" },
     { command: "start", description: "Voltar a receber avisos" },
