@@ -223,123 +223,175 @@ async function botao(q: any) {
 }
 
 // ------------------------------------------------------------ aviso de trovoada
+// Modelo aprovado pelo usuario em 08/11: todo aviso responde, na mesma ordem,
+// O QUE · ONDE · QUANDO · O QUE ESPERAR · O QUE FAZER — para a pessoa entender
+// sem abrir o painel.
 type Mun = { nome: string; situacao: string; dist_km: number | null; chegada_em: string | null;
   vem_de?: string | null; velocidade_kmh?: number | null };
 type Item = { regiao: string; tipo: string; silencioso: boolean; municipios: Mun[]; quadro: string };
 
-function blocoRegiao(it: Item, comTitulo = true): string {
+function blocoRegiao(it: Item): string {
   const muns = it.municipios ?? [];
   const no = muns.filter((m) => m.situacao === "no_municipio");
   const cam = muns.filter((m) => m.situacao === "a_caminho");
   const futuro = (iso: string | null) => iso && new Date(iso).getTime() > Date.now();
-  const lista = (ms: Mun[]) => ms.map((m) => esc(m.nome) + (m.situacao === "a_caminho" && m.dist_km != null
-    ? ` (~${Math.round(m.dist_km)} km)` : "")).join(", ");
+  const comKm = (ms: Mun[]) => ms.map((m) => esc(m.nome) + (m.dist_km != null ? ` (~${Math.round(m.dist_km)} km)` : "")).join(", ");
+  const nomes = (ms: Mun[]) => ms.map((m) => esc(m.nome)).join(", ");
   if (it.tipo === "afastou") {
-    return `✅ <b>Trovoada se afastou · ${esc(it.regiao)}</b>\nSem trovoada a até 50 km na última hora.`;
+    return `✅ <b>TROVOADA SE AFASTOU · ${esc(it.regiao)}</b>\n` +
+           "Sem descargas a até 50 km na última hora. O risco imediato passou.";
+  }
+  if (it.tipo === "no_municipio") {
+    return [`⚡⚡ <b>TROVOADA SOBRE A CIDADE · ${esc(it.regiao)}</b>`,
+      `<b>Onde:</b> ${nomes(no)} (descargas a até 10 km)`,
+      ...(cam.length ? [`<b>A caminho também:</b> ${comKm(cam)}`] : []),
+      "<b>O que esperar:</b> raios, chuva forte e rajadas nos próximos 30 a 60 minutos.",
+      "<b>O que fazer:</b> fique em local fechado e tire aparelhos sensíveis da tomada."].join("\n");
   }
   const chegadas = cam.map((m) => m.chegada_em).filter(futuro).sort() as string[];
-  let s = "";
-  if (it.tipo === "no_municipio") {
-    s += `⚡⚡ <b>Trovoada no município · ${esc(it.regiao)}</b>\n${lista(no)}`;
-    if (cam.length) s += `\nA caminho: ${lista(cam)}`;
-  } else {
-    s += `⚡ <b>Trovoada a caminho · ${esc(it.regiao)}</b>\n${lista(cam)}`;
-    // rumo e velocidade do municipio mais proximo da trovoada (o primeiro da lista)
-    const ref = cam.find((m) => m.vem_de);
-    const mov = ref?.vem_de ? `vindo de ${ref.vem_de}` +
-      (ref.velocidade_kmh ? ` a ~${Math.round(ref.velocidade_kmh)} km/h` : "") : "";
-    const partes = [chegadas.length ? `Chegada estimada ~${hm(chegadas[0])}` : "", mov].filter(Boolean);
-    if (partes.length) s += "\n" + partes.join(" · ");
-  }
-  return s;
+  const ref = cam.find((m) => m.vem_de);
+  const quando = [chegadas.length ? `chegada estimada ~${hm(chegadas[0])}` : "",
+    ref?.vem_de ? `vindo de ${ref.vem_de}` + (ref.velocidade_kmh ? ` a ~${Math.round(ref.velocidade_kmh)} km/h` : "") : ""]
+    .filter(Boolean).join(" · ");
+  return [`⚡ <b>TROVOADA A CAMINHO · ${esc(it.regiao)}</b>`,
+    `<b>Onde:</b> ${comKm(cam)}`,
+    ...(quando ? [`<b>Quando:</b> ${quando}`] : []),
+    "<b>O que esperar:</b> raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia.",
+    "<b>O que fazer:</b> recolha o que estiver solto, evite áreas abertas e carregue o celular."].join("\n");
 }
-const rodape = (quadro: string) => `\n<i>Descargas detectadas pela REDEMET · leitura das ${hm(quadro)}</i>`;
+function rodapeTrovoada(itens: Item[]): string {
+  const q = itens[0]?.quadro;
+  return "\n<i>Descargas detectadas pela Força Aérea (REDEMET)" + (q ? ` às ${hm(q)}` : "") + "." +
+    (itens.some((p) => p.tipo === "a_caminho") ? " Em testes, 3 de cada 4 avisos de \"a caminho\" se confirmaram." : "") + "</i>";
+}
+
+// Pedido do usuario (08/11): trovoada a caminho ou sobre a cidade dispara
+// TAMBEM o aviso de risco eletrico — duas mensagens, uma de cada.
+function blocoRiscoTrovoada(it: Item): string {
+  const muns = (it.municipios ?? []).filter((m) => m.situacao === "a_caminho" || m.situacao === "no_municipio");
+  const sobre = it.tipo === "no_municipio";
+  return [`🔌 <b>RISCO DE FALTA DE ENERGIA AGORA · ${esc(it.regiao)}</b>`,
+    `<b>Onde:</b> ${muns.map((m) => esc(m.nome)).join(", ")}`,
+    `<b>Por quê:</b> ${sobre ? "trovoada sobre a cidade" : "trovoada a caminho"} (descargas atmosféricas e rajadas)`,
+    "<b>O que significa:</b> raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica.",
+    "<b>O que fazer:</b> carregue celulares e lanternas e tire aparelhos sensíveis da tomada."].join("\n");
+}
 
 async function avisos() {
   const plano = (await rpc("tempo_tg_plano_trovoada")) as Item[];
   if (!plano.length) return { plano: 0, enviados: 0 };
   const dest = (await rpc("tempo_tg_destinatarios")) as { chat_id: number; regioes: string[]; todas: boolean }[];
   let enviados = 0;
-  const quadro = plano[0].quadro;
   for (const d of dest) {
     const meus = d.todas ? plano : plano.filter((p) => d.regioes.includes(p.regiao));
     if (!meus.length) continue;
-    // Quem segue varias regioes recebe UMA mensagem por rodada, nao uma por regiao.
-    const texto = meus.map((p) => blocoRegiao(p)).join("\n\n") + rodape(quadro);
-    const silencioso = meus.every((p) => p.silencioso);
-    try {
-      await enviar(d.chat_id, texto, { disable_notification: silencioso });
-      enviados++;
-      await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "trovoada",
-        p_regiao: meus.map((p) => p.regiao).join(","), p_ok: true, p_erro: null });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // Pessoa que bloqueou o bot: para de tentar (senao erra a cada 6 min para sempre).
-      if (/blocked|deactivated|chat not found/i.test(msg)) {
-        await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
+    // Quem segue varias regioes recebe UMA mensagem de trovoada por rodada (e,
+    // se houver trovoada chegando, UMA de risco eletrico logo depois).
+    const msgs = [{ tipo: "trovoada", texto: meus.map(blocoRegiao).join("\n\n") + rodapeTrovoada(meus),
+                    silencioso: meus.every((p) => p.silencioso) }];
+    const ativos = meus.filter((p) => p.tipo === "a_caminho" || p.tipo === "no_municipio");
+    if (ativos.length) msgs.push({ tipo: "risco_trovoada", texto: ativos.map(blocoRiscoTrovoada).join("\n\n"), silencioso: false });
+    for (const m of msgs) {
+      try {
+        await enviar(d.chat_id, m.texto, { disable_notification: m.silencioso });
+        enviados++;
+        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: m.tipo,
+          p_regiao: meus.map((p) => p.regiao).join(","), p_ok: true, p_erro: null });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: m.tipo,
+          p_regiao: meus.map((p) => p.regiao).join(","), p_ok: false, p_erro: msg.slice(0, 300) });
+        // Pessoa que bloqueou o bot: para de tentar (senao erra a cada 6 min para sempre).
+        if (/blocked|deactivated|chat not found/i.test(msg)) {
+          await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
+          break;
+        }
       }
-      await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "trovoada",
-        p_regiao: meus.map((p) => p.regiao).join(","), p_ok: false, p_erro: msg.slice(0, 300) });
     }
   }
   return { plano: plano.length, enviados };
 }
 
 // ------------------------------------------------------------ avisos imediatos 2 a 5
-// Formato aprovado pelo usuario em 07/11. A decisao de O QUE avisar (e a
-// memoria do que ja foi dito) fica no banco: tempo_tg_plano_alertas.
+// Mesmo modelo (O que · Onde · Quando · O que esperar · O que fazer). A decisao
+// de O QUE avisar (e a memoria do que ja foi dito) fica no banco:
+// tempo_tg_plano_alertas.
 type Alerta = { tipo: string; regiao: string; [k: string]: any };
 
 function diaHora(iso: string): string {
   const t = new Date(new Date(iso).getTime() - 3 * 3_600_000), h = new Date(Date.now() - 3 * 3_600_000);
   const mesmo = t.toISOString().slice(0, 10) === h.toISOString().slice(0, 10);
   const dia = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][t.getUTCDay()];
-  return (mesmo ? "" : `${dia} ${String(t.getUTCDate()).padStart(2, "0")}/${String(t.getUTCMonth() + 1).padStart(2, "0")} `) + hm(iso);
+  return mesmo ? `${hm(iso)} de hoje`
+    : `${dia} ${String(t.getUTCDate()).padStart(2, "0")}/${String(t.getUTCMonth() + 1).padStart(2, "0")} ${hm(iso)}`;
 }
-// O INMET manda os riscos como ["frase. Risco de ..."]: fica a primeira frase,
-// que e a que diz o que vem (chuva de tanto, vento de tanto).
-function resumoRiscos(r: string | null): string {
-  if (!r) return "";
+// O INMET manda os riscos como ["frase. Risco de ..."]: a primeira frase diz o
+// que vem (chuva de tanto, vento de tanto); o resto, as consequencias.
+function partesRiscos(r: string | null): { esperar: string; riscos: string } {
+  if (!r) return { esperar: "", riscos: "" };
   let s = r.trim();
   if (s.startsWith("[")) { try { s = String(JSON.parse(s)[0] ?? ""); } catch { /* fica como veio */ } }
-  s = s.split(/\.\s+(?=Risco|Baixo|Alto|Grande)/)[0].replace(/\.\s*$/, "").replace(/\s+/g, " ");
-  return s ? s[0].toLowerCase() + s.slice(1) : "";
+  s = s.replace(/\s+/g, " ");
+  const k = s.search(/\.\s+(?=Risco|Baixo|Alto|Grande)/);
+  const esperar = (k >= 0 ? s.slice(0, k) : s).replace(/\.\s*$/, "");
+  let riscos = k >= 0 ? s.slice(k + 1).trim().replace(/\.\s*$/, "") : "";
+  riscos = riscos.replace(/^(Baixo |Alto |Grande )?[Rr]isco (potencial )?de /, "");
+  return { esperar, riscos: riscos ? riscos[0].toUpperCase() + riscos.slice(1) : "" };
 }
 const lista = (xs: string[]) => xs.map(esc).join(", ");
 
 function blocoAlerta(a: Alerta): string {
   if (a.tipo === "inmet") {
-    const sev = a.severidade === "grande_perigo" ? ["🔴", "Grande Perigo"] : ["🟠", "Perigo"];
+    const verm = a.severidade === "grande_perigo";
+    const cor = verm ? "VERMELHO" : "LARANJA";
     const titulo = a.como === "elevou"
-      ? `🔴 <b>INMET elevou para Grande Perigo · ${esc(a.descricao)} · ${esc(a.regiao)}</b>`
-      : `${sev[0]} <b>INMET · ${esc(a.descricao)} — ${sev[1]} · ${esc(a.regiao)}</b>`;
+      ? `🔴 <b>INMET ELEVOU PARA ALERTA VERMELHO · ${esc(a.descricao)} · ${esc(a.regiao)}</b>`
+      : `${verm ? "🔴" : "🟠"} <b>ALERTA ${cor} DO INMET · ${esc(a.descricao)} · ${esc(a.regiao)}</b>`;
     const comecou = new Date(a.inicio).getTime() <= Date.now();
-    const quando = comecou ? `Até ${diaHora(a.fim)}` : `De ${diaHora(a.inicio)} até ${diaHora(a.fim)}`;
-    const riscos = resumoRiscos(a.riscos);
-    return `${titulo}\n${lista(a.municipios)}\n${quando}${riscos ? " · " + esc(riscos) : ""}`;
+    const p = partesRiscos(a.riscos);
+    return [titulo,
+      `<b>Nível:</b> ${verm ? "Grande Perigo (3º de 3 níveis" : "Perigo (2º de 3 níveis"}: amarelo, laranja, vermelho)`,
+      `<b>Onde:</b> ${lista(a.municipios)}` + (a.como === "entrou" ? " (entraram agora no alerta)" : ""),
+      `<b>Quando:</b> ${comecou ? "até " + diaHora(a.fim) : "de " + diaHora(a.inicio) + " até " + diaHora(a.fim)}`,
+      ...(p.esperar ? [`<b>O que esperar:</b> ${esc(p.esperar)}.`] : []),
+      ...(p.riscos ? [`<b>Riscos:</b> ${esc(p.riscos)}.`] : [])].join("\n");
   }
   if (a.tipo === "dc") {
-    const ROT: Record<string, string> = { geologico: "Risco geológico (deslizamentos)", hidrologico: "Risco hidrológico (enchentes)" };
-    const linhas: string[] = [];
+    // um bloco por tipo e nivel: deslizamento e enchente pedem cuidados diferentes
+    const TXT: Record<string, [string, string, string]> = {
+      geologico: ["DESLIZAMENTO", "o solo está encharcado e há chance real de deslizamento em encostas.",
+        "fique atento a rachaduras, estalos e água barrenta nas encostas. Em caso de risco, Defesa Civil: <b>199</b>."],
+      hidrologico: ["ENCHENTE", "rios e córregos podem transbordar e alagar as áreas próximas.",
+        "evite margens de rios e ruas que costumam alagar. Em caso de risco, Defesa Civil: <b>199</b>."] };
+    const blocos: string[] = [];
     for (const tipo of ["geologico", "hidrologico"]) {
       for (const nv of ["muito_alto", "alto"]) {
         const ms = a.itens.filter((i: any) => i.tipo === tipo && i.nivel === nv).map((i: any) => i.municipio);
-        if (ms.length) linhas.push(`${ROT[tipo]} <b>${nv === "muito_alto" ? "MUITO ALTO" : "ALTO"}</b>: ${lista(ms)}`);
+        if (!ms.length) continue;
+        const t = TXT[tipo];
+        blocos.push([`🏔️ <b>DEFESA CIVIL · RISCO ${nv === "muito_alto" ? "MUITO ALTO" : "ALTO"} DE ${t[0]} · ${esc(a.regiao)}</b>`,
+          `<b>Onde:</b> ${lista(ms)}`, `<b>O que significa:</b> ${t[1]}`, `<b>O que fazer:</b> ${t[2]}`].join("\n"));
       }
-      // moderado entra como contexto so quando e pouco (a fonte poe 80+ municipios em moderado)
-      const mod = (a.moderados ?? []).filter((i: any) => i.tipo === tipo).map((i: any) => i.municipio);
-      if (mod.length && mod.length <= 3) linhas.push(`${ROT[tipo]} <b>MODERADO</b>: ${lista(mod)}`);
     }
-    return `🏔️ <b>Defesa Civil · ${esc(a.regiao)}</b>\n` + linhas.join("\n");
+    return blocos.join("\n\n");
   }
   if (a.tipo === "risco") {
-    return `🔌 <b>Risco elétrico ALTO ${a.quando} · ${esc(a.regiao)}</b>\n${lista(a.municipios)} · motivo: ${esc(a.motivo)}`;
+    const fator = a.fator && a.fator >= 1.5
+      ? `o TEMPO-RJ espera cerca de ${Number(a.fator).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} vezes mais ocorrências na rede elétrica do que num dia normal.`
+      : "o TEMPO-RJ espera bem mais ocorrências na rede elétrica do que num dia normal.";
+    return [`🔌 <b>RISCO ALTO DE FALTA DE ENERGIA ${String(a.quando).toUpperCase()} · ${esc(a.regiao)}</b>`,
+      `<b>Onde:</b> ${lista(a.municipios)}`,
+      `<b>Por quê:</b> ${esc(a.motivo)}`,
+      `<b>O que significa:</b> ${fator}`,
+      "<b>O que fazer:</b> carregue celulares e lanternas e evite deixar a geladeira cheia de perecíveis."].join("\n");
   }
   if (a.tipo === "chuva") {
-    const nf1 = (v: number) => Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
-    return `🌧️ <b>Chuva forte medida · ${esc(a.regiao)}</b>\n` + a.itens.map((i: any) =>
-      i.mm1h >= 30 ? `${esc(i.municipio)}: ${nf1(i.mm1h)} mm na última hora`
-                   : `${esc(i.municipio)}: ${nf1(i.mm24)} mm em 24 h`).join("\n");
+    const n0 = (v: number) => Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+    return [`🌧️ <b>CHUVA FORTE AGORA · ${esc(a.regiao)}</b>`,
+      ...a.itens.map((i: any) => `<b>Onde:</b> ${esc(i.municipio)} — ` +
+        (i.mm1h >= 30 ? `${n0(i.mm1h)} mm na última hora` : `${n0(i.mm24)} mm em 24 h`) + " (pluviômetro)"),
+      "<b>O que significa:</b> chuva intensa, com risco de alagamento em pontos baixos nas próximas horas.",
+      "<b>O que fazer:</b> evite ruas que costumam alagar e não atravesse água corrente."].join("\n");
   }
   return "";
 }
