@@ -256,24 +256,27 @@ async function avisos() {
 }
 
 // ------------------------------------------------------------ boletim de 6 em 6 h
-// Numeros do painel (tempo_tg_boletim faz as contas do renderHero). Aqui so se
-// escolhe o PIOR municipio de cada regiao — media de regiao esconderia
-// justamente o municipio que vai sofrer — e se formata.
-type MunB = { municipio: string; k6: number; chance6: number | null; forte24: number | null;
-  mm24: number | null; raj24: number | null; tmax: number | null; tmin: number | null;
-  mm_dia: number | null; pct_do_mes: number | null; risco_hoje: string | null; risco_amanha: string | null };
+// Numeros do painel (tempo_tg_boletim faz as contas do renderHero) e chuva
+// medida pelos pluviometros. Aqui so se escolhe o municipio mais critico de
+// cada regiao (media esconderia o municipio que vai sofrer) e se monta o card.
+type MunB = { municipio: string; k6: number; chance6: number | null; k_forte: number;
+  mm24: number | null; p25_24: number | null; p75_24: number | null; raj24: number | null;
+  tmax: number | null; tmin: number | null; mm_hoje: number | null; mm_mes: number | null;
+  normal_mes: number | null; risco_hoje: string | null; risco_amanha: string | null };
 type RegB = { regiao: string; muns: MunB[]; inmet: { descricao: string; severidade: string; fim: string | null; n: number }[];
   dc: { tipo: string; nivel: string; muns: string[] }[] };
 
 const nf = (v: number, c = 1) => v.toLocaleString("pt-BR", { minimumFractionDigits: c, maximumFractionDigits: c });
-const SEV = { perigo_potencial: ["🟡", "Perigo potencial", 1], perigo: ["🟠", "Perigo", 2],
-              grande_perigo: ["🔴", "Grande perigo", 3] } as Record<string, [string, string, number]>;
-const RISCO = { alto: ["🔴", 3], elevado: ["🟠", 2], moderado: ["🟡", 1], normal: ["⚪", 0] } as Record<string, [string, number]>;
-const DC_TIPO: Record<string, string> = { geologico: "geológico (deslizamentos)", hidrologico: "hidrológico (enchentes)" };
+const SEV: Record<string, [string, number]> = { perigo_potencial: ["🟡", 1], perigo: ["🟠", 2], grande_perigo: ["🔴", 3] };
+const RISCO: Record<string, [string, string]> = {
+  alto: ["🔴", "Alto"], elevado: ["🟠", "Elevado"], moderado: ["🟡", "Moderado"], normal: ["⚪", "Normal"] };
+const DC_TIPO: Record<string, string> = { geologico: "Risco geológico (deslizamentos)", hidrologico: "Risco hidrológico (enchentes)" };
+const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+               "setembro", "outubro", "novembro", "dezembro"];
 
 function pior<T>(xs: T[], v: (x: T) => number | null | undefined): T | null {
   let m: T | null = null, mv = -Infinity;
-  for (const x of xs) { const y = v(x) ?? -Infinity; if (y > mv) { mv = y; m = x; } }
+  for (const x of xs) { const y = v(x); if (y != null && y > mv) { mv = y; m = x; } }
   return m;
 }
 function quando(iso: string | null): string {
@@ -283,103 +286,94 @@ function quando(iso: string | null): string {
   return " até " + (mesmoDia ? "" : String(t.getUTCDate()).padStart(2, "0") + "/" +
     String(t.getUTCMonth() + 1).padStart(2, "0") + " ") + hm(iso);
 }
-function inmetPrincipais(r: RegB) {
+
+// Risco: lista os municipios dos niveis mais altos; o nivel de baixo, que
+// cobre todo o resto, vira "demais" (como no modelo aprovado).
+function linhasRisco(ms: MunB[]): string[] {
+  const nv = (m: MunB) => (m.risco_hoje && RISCO[m.risco_hoje]) ? m.risco_hoje : null;
+  const presentes = ["alto", "elevado", "moderado", "normal"].filter((k) => ms.some((m) => nv(m) === k));
+  if (!presentes.length) return ["sem cálculo para hoje"];
+  if (presentes.length === 1) return [`${RISCO[presentes[0]][0]} ${RISCO[presentes[0]][1]}: todos os municípios`];
+  return presentes.map((k, i) => `${RISCO[k][0]} ${RISCO[k][1]}: ` + (i === presentes.length - 1 ? "demais"
+    : ms.filter((m) => nv(m) === k).map((m) => esc(m.municipio)).join(", ")));
+}
+
+// O CARD de uma regiao, no modelo aprovado pelo usuario em 07/11.
+function cardRegiao(r: RegB, rotuloHora: string): string {
+  const ms = r.muns ?? [];
+  const p6 = pior(ms, (m) => m.chance6) ?? ms[0];
+  const kf = Math.max(0, ...ms.map((m) => m.k_forte ?? 0));
+  const mm = pior(ms, (m) => m.mm24) ?? ms[0];
+  const raj = Math.max(0, ...ms.map((m) => m.raj24 ?? 0));
+  const tmax = Math.max(...ms.map((m) => m.tmax ?? -99)), tmin = Math.min(...ms.map((m) => m.tmin ?? 99));
+  const medHoje = pior(ms, (m) => m.mm_hoje);
+  const medMes = pior(ms, (m) => (m.mm_mes != null && m.normal_mes ? m.mm_mes / m.normal_mes : null));
+  const mes = MESES[new Date(Date.now() - 3 * 3_600_000).getUTCMonth()];
+
+  const L: string[] = [];
+  L.push(`⛅ <b>TEMPO-RJ · ${esc(r.regiao)}</b> · boletim ${rotuloHora}`, "");
+  L.push("<b>Próximas 6 h</b>");
+  L.push(`${p6.k6} de 8 famílias preveem chuva (${Math.round(100 * p6.k6 / 8)}%) → ` +
+         (p6.chance6 != null ? `<b>${nf(100 * p6.chance6)}% de chance</b>` : "tabela de chance indisponível"), "");
+  L.push("<b>Próximas 24 h</b>");
+  L.push(`Chuva forte: ${kf} de 8 famílias`);
+  L.push(`Previsto ~${nf(mm.mm24 ?? 0)} mm` +
+         (mm.p25_24 != null && mm.p75_24 != null ? ` (metade central: ${nf(mm.p25_24)}–${nf(mm.p75_24)} mm)` : ""));
+  L.push(`Rajada máxima ${Math.round(raj)} km/h` +
+         (tmax > -99 ? ` · Temperatura ${Math.round(tmin)}–${Math.round(tmax)} °C` : ""), "");
+  L.push("<b>Chuva medida</b>");
+  if (!medHoje && !medMes) {
+    L.push("sem pluviômetro com leitura nesta região");
+  } else {
+    L.push(`Hoje até agora: ${nf(medHoje?.mm_hoje ?? 0)} mm`);
+    if (medMes) L.push(`No mês: ${nf(medMes.mm_mes!, 0)} mm = <b>${Math.round(100 * medMes.mm_mes! / medMes.normal_mes!)}% da normal</b> de ${mes}`);
+  }
+  L.push("", "⚡ <b>Risco elétrico hoje</b>", ...linhasRisco(ms), "", "<b>Alertas em vigor</b>");
   // mesmo aviso em dois niveis (amarelo para uns municipios, laranja para outros): fica o pior
   const porDesc = new Map<string, RegB["inmet"][0]>();
   for (const a of r.inmet) {
-    const atual = porDesc.get(a.descricao);
-    if (!atual || (SEV[a.severidade]?.[2] ?? 4) > (SEV[atual.severidade]?.[2] ?? 4)) porDesc.set(a.descricao, a);
+    const at = porDesc.get(a.descricao);
+    if (!at || (SEV[a.severidade]?.[1] ?? 4) > (SEV[at.severidade]?.[1] ?? 4)) porDesc.set(a.descricao, a);
   }
-  return [...porDesc.values()].sort((a, b) => (SEV[b.severidade]?.[2] ?? 4) - (SEV[a.severidade]?.[2] ?? 4));
-}
-function riscoTexto(ms: MunB[], campo: "risco_hoje" | "risco_amanha") {
-  const altos = ms.filter((m) => (RISCO[m[campo] ?? ""]?.[1] ?? 0) >= 2)
-    .sort((a, b) => RISCO[b[campo]!][1] - RISCO[a[campo]!][1]);
-  if (altos.length) {
-    const nv = altos[0][campo]!;
-    const mesmos = altos.filter((m) => m[campo] === nv).map((m) => esc(m.municipio));
-    const outros = altos.length - mesmos.length;
-    return `${RISCO[nv][0]} ${nv} — ${mesmos.join(", ")}` + (outros ? ` (+${outros} elevado)` : "");
-  }
-  const mod = ms.filter((m) => m[campo] === "moderado").length;
-  return mod ? `🟡 moderado em ${mod} de ${ms.length}` : "⚪ normal";
-}
-
-function blocoBoletim(r: RegB): string {
-  const ms = r.muns ?? [];
-  const p6 = pior(ms, (m) => m.chance6)!;
-  const mm = pior(ms, (m) => m.mm24)!, rj = pior(ms, (m) => m.raj24)!, ft = pior(ms, (m) => m.forte24);
-  const pc = pior(ms, (m) => (m.pct_do_mes ?? -1) * 1000 + (m.mm_dia ?? 0))!;
-  const tmax = Math.max(...ms.map((m) => m.tmax ?? -99)), tmin = Math.min(...ms.map((m) => m.tmin ?? 99));
-  const linhas = [`⛅ <b>${esc(r.regiao)}</b>`];
-  linhas.push(`🌧️ <b>6 h:</b> ${p6.chance6 != null ? nf(100 * p6.chance6) + "% de chance de chuva" : "sem tabela de chance"}` +
-              ` · ${p6.k6} de 8 famílias (${esc(p6.municipio)})`);
-  let l24 = `📅 <b>24 h:</b> ~${nf(mm.mm24 ?? 0)} mm (${esc(mm.municipio)}) · rajada até ${Math.round(rj.raj24 ?? 0)} km/h (${esc(rj.municipio)})`;
-  if (ft && (ft.forte24 ?? 0) > 0) l24 += ` · chuva forte ${Math.round(100 * ft.forte24!)}% (${esc(ft.municipio)})`;
-  if (tmax > -99) l24 += ` · ${Math.round(tmin)}–${Math.round(tmax)} °C`;
-  linhas.push(l24);
-  if (pc.mm_dia != null) linhas.push(`📆 <b>Hoje:</b> ~${nf(pc.mm_dia)} mm previstos` +
-    (pc.pct_do_mes != null ? ` = ${pc.pct_do_mes}% da normal do mês` : "") + ` (${esc(pc.municipio)})`);
-  linhas.push(`🔌 <b>Risco elétrico</b> hoje: ${riscoTexto(ms, "risco_hoje")}`);
-  if (ms.some((m) => (RISCO[m.risco_amanha ?? ""]?.[1] ?? 0) >= 2)) linhas.push(`      amanhã: ${riscoTexto(ms, "risco_amanha")}`);
-  for (const a of inmetPrincipais(r).slice(0, 3)) {
-    const s = SEV[a.severidade] ?? ["⚠️", a.severidade, 4];
-    linhas.push(`${s[0]} <b>INMET:</b> ${esc(a.descricao)} · ${s[1]}${quando(a.fim)} (${a.n} munic.)`);
-  }
+  const al = [...porDesc.values()].sort((a, b) => (SEV[b.severidade]?.[1] ?? 4) - (SEV[a.severidade]?.[1] ?? 4));
+  for (const a of al) L.push(`${(SEV[a.severidade] ?? ["⚠️"])[0]} INMET · ${esc(a.descricao)}${quando(a.fim)}`);
   for (const d of r.dc) {
-    linhas.push(`🏔️ <b>Defesa Civil:</b> risco ${DC_TIPO[d.tipo] ?? d.tipo} ${d.nivel === "muito_alto" ? "MUITO ALTO" : "ALTO"} — ${d.muns.map(esc).join(", ")}`);
+    L.push(`${d.nivel === "muito_alto" ? "🔴" : "🟠"} Defesa Civil · ${DC_TIPO[d.tipo] ?? d.tipo} ` +
+           `${d.nivel === "muito_alto" ? "muito alto" : "alto"}: ${d.muns.map(esc).join(", ")}`);
   }
-  return linhas.join("\n");
+  if (!al.length && !r.dc.length) L.push("nenhum");
+  return L.join("\n");
 }
 
-function linhaCompacta(r: RegB): string {
-  const ms = r.muns ?? [];
-  const p6 = pior(ms, (m) => m.chance6)!, mm = pior(ms, (m) => m.mm24)!, rj = pior(ms, (m) => m.raj24)!;
-  const rh = Math.max(...ms.map((m) => RISCO[m.risco_hoje ?? ""]?.[1] ?? 0));
-  const nvRisco = Object.keys(RISCO).find((k) => RISCO[k][1] === rh)!;
-  const al = inmetPrincipais(r)[0];
-  return `<b>${esc(r.regiao)}</b> — 6 h ${p6.chance6 != null ? nf(100 * p6.chance6) + "%" : "–"}` +
-    ` · 24 h ~${nf(mm.mm24 ?? 0)} mm · rajada ${Math.round(rj.raj24 ?? 0)} km/h` +
-    ` · 🔌${RISCO[nvRisco][0]}` + (al ? ` · ${(SEV[al.severidade] ?? ["⚠️"])[0]} ${esc(al.descricao)}` : "") +
-    (r.dc.length ? " · 🏔️" : "");
-}
-
-function cabecalho(): string {
-  const t = new Date(Date.now() - 3 * 3_600_000);
-  const dia = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][t.getUTCDay()];
-  return `⛅ <b>Boletim TEMPO-RJ</b> · ${dia} ${String(t.getUTCDate()).padStart(2, "0")}/` +
-         `${String(t.getUTCMonth() + 1).padStart(2, "0")} ${String(t.getUTCHours()).padStart(2, "0")}h`;
-}
-
-// Ate 3 regioes: bloco detalhado de cada. Mais que isso (ou "Todas"): uma
-// linha por regiao — 11 blocos a cada 6 h seria um muro de texto.
-function montarBoletim(regs: RegB[], u: { regioes: string[]; todas: boolean }): string | null {
-  const meus = (u.todas ? regs : regs.filter((r) => u.regioes.includes(r.regiao)))
-    .sort((a, b) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao));
-  if (!meus.length) return null;
-  const corpo = meus.length <= 3 ? meus.map(blocoBoletim).join("\n\n") : meus.map(linhaCompacta).join("\n");
-  return cabecalho() + "\n\n" + corpo + "\n\n<i>" +
-    (meus.length <= 3 ? "Pior município de cada linha" : "Pior município de cada região · 🔌 risco elétrico hoje") +
-    " · detalhes em tempo-rj.vercel.app</i>";
-}
-
+// UM CARD POR REGIAO, cada um numa mensagem (decisao do usuario, 08/11).
+// Quem segue varias regioes recebe varios cards; so o primeiro da rodada toca,
+// os outros chegam sem som — senao "Todas" seriam 11 toques seguidos.
 async function boletim(soChat?: number) {
-  const regs = (await rpc("tempo_tg_boletim")) as RegB[];
+  const regs = ((await rpc("tempo_tg_boletim")) as RegB[])
+    .sort((a, b) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao));
   const dest = (await rpc("tempo_tg_destinatarios")) as { chat_id: number; regioes: string[]; todas: boolean }[];
-  const meiaNoite = new Date(Date.now() - 3 * 3_600_000).getUTCHours() < 3;   // o das 00h sai sem som
+  const agora = new Date(Date.now() - 3 * 3_600_000);
+  const meiaNoite = agora.getUTCHours() < 3;                 // o das 00h sai todo sem som
+  const rotuloHora = soChat ? hm(new Date().toISOString())   // pedido na hora: hora exata
+    : String(Math.round(agora.getUTCHours() + agora.getUTCMinutes() / 60) % 24).padStart(2, "0") + "h";
   let enviados = 0;
   for (const d of dest) {
     if (soChat && d.chat_id !== soChat) continue;
-    const texto = montarBoletim(regs, d);
-    if (!texto) continue;
-    try {
-      await enviar(d.chat_id, texto, { disable_notification: meiaNoite && !soChat });
-      enviados++;
-      await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "boletim", p_regiao: null, p_ok: true, p_erro: null });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/blocked|deactivated|chat not found/i.test(msg)) await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
-      await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "boletim", p_regiao: null, p_ok: false, p_erro: msg.slice(0, 300) });
+    const meus = d.todas ? regs : regs.filter((r) => d.regioes.includes(r.regiao));
+    for (let i = 0; i < meus.length; i++) {
+      try {
+        await enviar(d.chat_id, cardRegiao(meus[i], rotuloHora),
+                     { disable_notification: (meiaNoite && !soChat) || i > 0 });
+        enviados++;
+        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "boletim", p_regiao: meus[i].regiao, p_ok: true, p_erro: null });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "boletim", p_regiao: meus[i].regiao, p_ok: false, p_erro: msg.slice(0, 300) });
+        if (/blocked|deactivated|chat not found/i.test(msg)) {
+          await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
+          break;
+        }
+      }
     }
   }
   return { regioes: regs.length, enviados };
@@ -415,10 +409,13 @@ Deno.serve(async (req: Request) => {
     if (req.headers.get("x-tempo-secret") !== SEGREDO) return json({ erro: "nao autorizado" }, 401);
     const t0 = Date.now();
     try {
+      // "teste": o boletim so para o(s) administrador(es) — para conferir o
+      // formato sem mandar para os outros inscritos.
       const r = acao === "configurar" ? await configurar()
               : acao === "boletim"    ? await boletim()
+              : acao === "teste"      ? await boletim(((await rpc("tempo_tg_admins")) as number[])[0])
               : await avisos();
-      if (acao !== "configurar") {
+      if (acao !== "configurar" && acao !== "teste") {
         try {
           await sb.rpc("tempo_log_coleta", { p_fonte: "telegram", p_ms: Date.now() - t0, p_ok: true,
                                              p_n: (r as any).enviados ?? 0, p_erro: null });
