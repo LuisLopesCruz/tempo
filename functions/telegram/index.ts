@@ -248,13 +248,15 @@ function blocoRegiao(it: Item): string {
   const nomes = (ms: Mun[]) => ms.map((m) => esc(m.nome)).join(", ");
   if (it.tipo === "afastou") {
     return `✅ <b>TROVOADA SE AFASTOU · ${esc(it.regiao)}</b>\n` +
-           "Sem descargas a até 50 km na última hora. O risco imediato passou.";
+           "Sem descargas a até 50 km na última hora. O risco imediato passou.\n" +
+           `<b>Origem:</b> descargas atmosféricas detectadas pela Força Aérea (REDEMET), leitura das ${hm(it.quadro)}.`;
   }
   if (it.tipo === "no_municipio") {
     return [`⚡⚡ <b>TROVOADA SOBRE A CIDADE · ${esc(it.regiao)}</b>`,
       `<b>Onde:</b> ${nomes(no)} (descargas a até 10 km)`,
       ...(cam.length ? [`<b>A caminho também:</b> ${comKm(cam)}`] : []),
       "<b>O que esperar:</b> raios, chuva forte e rajadas nos próximos 30 a 60 minutos.",
+      `<b>Origem:</b> descargas atmosféricas detectadas pela Força Aérea (REDEMET) a até 10 km do município nos últimos 20 min — leitura das ${hm(it.quadro)}.`,
       "<b>O que fazer:</b> fique em local fechado e tire aparelhos sensíveis da tomada."].join("\n");
   }
   const chegadas = cam.map((m) => m.chegada_em).filter(futuro).sort() as string[];
@@ -266,12 +268,13 @@ function blocoRegiao(it: Item): string {
     `<b>Onde:</b> ${comKm(cam)}`,
     ...(quando ? [`<b>Quando:</b> ${quando}`] : []),
     "<b>O que esperar:</b> raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia.",
+    `<b>Origem:</b> descargas atmosféricas detectadas pela Força Aérea (REDEMET) — célula a até 50 km que chegou pelo menos 5 km mais perto nos últimos 30 min. Leitura das ${hm(it.quadro)}.`,
     "<b>O que fazer:</b> recolha o que estiver solto, evite áreas abertas e carregue o celular."].join("\n");
 }
 function rodapeTrovoada(itens: Item[]): string {
-  const q = itens[0]?.quadro;
-  return "\n<i>Descargas detectadas pela Força Aérea (REDEMET)" + (q ? ` às ${hm(q)}` : "") + "." +
-    (itens.some((p) => p.tipo === "a_caminho") ? " Em testes, 3 de cada 4 avisos de \"a caminho\" se confirmaram." : "") + "</i>";
+  // a origem agora vai em cada bloco; o rodape fica so com a confianca medida
+  return itens.some((p) => p.tipo === "a_caminho")
+    ? "\n<i>Em testes com as tempestades de 2026, 3 de cada 4 avisos de \"a caminho\" se confirmaram.</i>" : "";
 }
 
 // Pedido do usuario (08/11): trovoada a caminho ou sobre a cidade dispara
@@ -283,6 +286,7 @@ function blocoRiscoTrovoada(it: Item): string {
     `<b>Onde:</b> ${muns.map((m) => esc(m.nome)).join(", ")}`,
     `<b>Por quê:</b> ${sobre ? "trovoada sobre a cidade" : "trovoada a caminho"} (descargas atmosféricas e rajadas)`,
     "<b>O que significa:</b> raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica.",
+    `<b>Origem:</b> aviso de trovoada do TEMPO-RJ, com base nas descargas detectadas pela Força Aérea (REDEMET) — leitura das ${hm(it.quadro)}.`,
     "<b>O que fazer:</b> carregue celulares e lanternas e tire aparelhos sensíveis da tomada."].join("\n");
 }
 
@@ -363,7 +367,8 @@ function blocoAlerta(a: Alerta): string {
       `<b>Onde:</b> ${lista(a.municipios)}` + (a.como === "entrou" ? " (entraram agora no alerta)" : ""),
       `<b>Quando:</b> ${comecou ? "até " + diaHora(a.fim) : "de " + diaHora(a.inicio) + " até " + diaHora(a.fim)}`,
       ...(p.esperar ? [`<b>O que esperar:</b> ${esc(p.esperar)}.`] : []),
-      ...(p.riscos ? [`<b>Riscos:</b> ${esc(p.riscos)}.`] : [])].join("\n");
+      ...(p.riscos ? [`<b>Riscos:</b> ${esc(p.riscos)}.`] : []),
+      `<b>Origem:</b> aviso oficial do INMET (Instituto Nacional de Meteorologia), nível ${verm ? "Grande Perigo" : "Perigo"}, publicado para estes municípios.`].join("\n");
   }
   if (a.tipo === "dc") {
     // um bloco por tipo e nivel: deslizamento e enchente pedem cuidados diferentes
@@ -379,7 +384,9 @@ function blocoAlerta(a: Alerta): string {
         if (!ms.length) continue;
         const t = TXT[tipo];
         blocos.push([`🏔️ <b>DEFESA CIVIL · RISCO ${nv === "muito_alto" ? "MUITO ALTO" : "ALTO"} DE ${t[0]} · ${esc(a.regiao)}</b>`,
-          `<b>Onde:</b> ${lista(ms)}`, `<b>O que significa:</b> ${t[1]}`, `<b>O que fazer:</b> ${t[2]}`].join("\n"));
+          `<b>Onde:</b> ${lista(ms)}`, `<b>O que significa:</b> ${t[1]}`,
+          `<b>Origem:</b> Defesa Civil do Estado do RJ (painel CEMADEN-RJ) — nível de risco ${tipo === "geologico" ? "geológico" : "hidrológico"} publicado oficialmente para o município.`,
+          `<b>O que fazer:</b> ${t[2]}`].join("\n"));
       }
     }
     return blocos.join("\n\n");
@@ -392,6 +399,8 @@ function blocoAlerta(a: Alerta): string {
       `<b>Onde:</b> ${lista(a.municipios)}`,
       `<b>Por quê:</b> ${esc(a.motivo)}`,
       `<b>O que significa:</b> ${fator}`,
+      "<b>Origem:</b> modelo de impacto do TEMPO-RJ — a previsão das 8 famílias de modelos meteorológicos " +
+        "(rajada, chuva por hora e instabilidade) aplicada ao histórico de interrupções de energia da ANEEL em cada município.",
       "<b>O que fazer:</b> carregue celulares e lanternas e evite deixar a geladeira cheia de perecíveis."].join("\n");
   }
   if (a.tipo === "chuva") {
@@ -400,6 +409,8 @@ function blocoAlerta(a: Alerta): string {
       ...a.itens.map((i: any) => `<b>Onde:</b> ${esc(i.municipio)} — ` +
         (i.mm1h >= 30 ? `${n0(i.mm1h)} mm na última hora` : `${n0(i.mm24)} mm em 24 h`) + " (pluviômetro)"),
       "<b>O que significa:</b> chuva intensa, com risco de alagamento em pontos baixos nas próximas horas.",
+      "<b>Origem:</b> chuva medida pelos pluviômetros do CEMADEN e do Alerta Rio no município" +
+        (a.itens[0]?.hora ? ` — leitura das ${hm(a.itens[0].hora)}` : "") + ". Limite do aviso: 30 mm em 1 hora ou 50 mm em 24 horas.",
       "<b>O que fazer:</b> evite ruas que costumam alagar e não atravesse água corrente."].join("\n");
   }
   return "";
