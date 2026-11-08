@@ -49,9 +49,18 @@ async function tg(metodo: string, corpo: Record<string, unknown>) {
   if (!j.ok) throw new Error(`${metodo}: ${j.description ?? r.status}`);
   return j.result;
 }
-const enviar = (chat: number, texto: string, extra: Record<string, unknown> = {}) =>
-  tg("sendMessage", { chat_id: chat, text: texto, parse_mode: "HTML",
-                      disable_web_page_preview: true, ...extra });
+// Se o Telegram recusar a formatacao (HTML mal formado), a mensagem sai SEM
+// formatacao em vez de se perder: aviso feio chega; aviso perdido nao.
+async function enviar(chat: number, texto: string, extra: Record<string, unknown> = {}) {
+  try {
+    return await tg("sendMessage", { chat_id: chat, text: texto, parse_mode: "HTML",
+                                     disable_web_page_preview: true, ...extra });
+  } catch (e) {
+    if (!/can't parse entities/i.test(e instanceof Error ? e.message : String(e))) throw e;
+    const puro = texto.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    return await tg("sendMessage", { chat_id: chat, text: puro, disable_web_page_preview: true, ...extra });
+  }
+}
 
 async function segredoWebhook(): Promise<string> {
   const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("telegram:" + SEGREDO));
@@ -470,7 +479,9 @@ const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julh
 function pctMes(mm: number | null | undefined, normal: number | null | undefined): string {
   if (!normal || mm == null) return "–";
   const p = 100 * mm / normal;
-  return p > 0 && p < 1 ? "<1%" : `${Math.round(p)}%`;
+  // "menos de 1%" e nao "<1%": a mensagem vai em HTML e o Telegram le "<1%" como
+  // tag e RECUSA a mensagem inteira (08/11: 3 cards do boletim das 12h perdidos).
+  return p > 0 && p < 1 ? "menos de 1%" : `${Math.round(p)}%`;
 }
 function pior<T>(xs: T[], v: (x: T) => number | null | undefined): T | null {
   let m: T | null = null, mv = -Infinity;
@@ -785,10 +796,14 @@ Deno.serve(async (req: Request) => {
   if (req.headers.get("x-telegram-bot-api-secret-token") !== await segredoWebhook()) {
     return json({ erro: "nao autorizado" }, 401);
   }
+  const upd = await req.json().catch(() => ({}));
   try {
-    await conversa(await req.json());
+    await conversa(upd);
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
+    // a pessoa pediu algo e nao veio nada: melhor avisar do que ficar mudo
+    const chat = upd?.message?.chat?.id ?? upd?.callback_query?.message?.chat?.id;
+    if (chat) await enviar(chat, "⚠️ Não consegui montar a resposta agora. Tente de novo em alguns minutos.").catch(() => {});
   }
   return json({ ok: true });
 });
