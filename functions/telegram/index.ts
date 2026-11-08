@@ -64,6 +64,20 @@ async function rpc(nome: string, args: Record<string, unknown> = {}) {
   return data;
 }
 
+// ------------------------------------------------------------ painel fixado no topo
+// Pedido do usuario (08/11): o endereco do site no TOPO do bot, e os avisos
+// explicativos o bastante para so abrir o site quem quiser ver mais. A
+// mensagem fixada fica sempre visivel no alto da conversa.
+const SITE = "https://tempo-rj.vercel.app";
+async function fixarPainel(chat: number) {
+  const msg = await enviar(chat, `🌐 <b>Painel completo do TEMPO-RJ</b>
+${SITE}
+` +
+    "Mapas, gráficos e os 92 municípios. Os avisos aqui já trazem o essencial — " +
+    "o painel é para quem quiser ver mais.", { disable_notification: true });
+  await tg("pinChatMessage", { chat_id: chat, message_id: msg.message_id, disable_notification: true });
+}
+
 // ------------------------------------------------------------ menu de regioes
 function teclado(regioes: string[], todas: boolean) {
   const marca = (on: boolean) => (on ? "✅ " : "▫️ ");
@@ -127,6 +141,7 @@ async function conversa(upd: any) {
       return;
     }
     if (u.status === "recusado") return;                  // silencio: nao insiste
+    if (u.novo) await fixarPainel(chat).catch(() => {});
     await enviar(chat, (u.admin && u.novo
       ? "Olá! Você é o <b>administrador</b> do TEMPO-RJ: pedidos de acesso chegam aqui para você aprovar.\n\n"
       : "Olá! Bem-vindo ao <b>TEMPO-RJ</b>.\n\n") +
@@ -174,8 +189,11 @@ async function botao(q: any) {
     await resp(ok ? "Aprovado" : "Recusado");
     await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, parse_mode: "HTML",
       text: (ok ? "✅ Aprovado: " : "✖️ Recusado: ") + "<b>" + esc(r?.nome ?? String(alvo)) + "</b>" });
-    if (ok) await enviar(alvo, "Seu acesso ao <b>TEMPO-RJ</b> foi aprovado! Escolha as regiões e toque em <b>Concluir</b>:",
-                         { reply_markup: teclado([], false) });
+    if (ok) {
+      await fixarPainel(alvo).catch(() => {});
+      await enviar(alvo, "Seu acesso ao <b>TEMPO-RJ</b> foi aprovado! Escolha as regiões e toque em <b>Concluir</b>:",
+                   { reply_markup: teclado([], false) });
+    }
     return;
   }
 
@@ -599,7 +617,6 @@ function cardMunicipio(m: any): string {
     const nv = d ? (NIVEL_DC[d.nivel] ?? ["⚠️", d.nivel]) : ["⚪", "sem dado"];
     L.push(`${nv[0]} Defesa Civil · ${DC_TIPO[tipo]}: ${nv[1]}`);
   }
-  L.push("", "<i>detalhes em tempo-rj.vercel.app</i>");
   return L.join("\n");
 }
 
@@ -669,6 +686,7 @@ async function configurar() {
     "Tempo no estado do Rio de Janeiro, por região: boletim de 6 em 6 h com os números do painel " +
     "TEMPO-RJ e avisos imediatos — trovoada se aproximando, alertas do INMET e da Defesa Civil, " +
     "risco elétrico e chuva forte medida. Acesso mediante aprovação." });
+  await tg("setMyShortDescription", { short_description: "Tempo no RJ por região. Painel completo: tempo-rj.vercel.app" });
   return { bot: eu.username, webhook: url };
 }
 
@@ -687,8 +705,13 @@ Deno.serve(async (req: Request) => {
               : acao === "boletim"    ? await boletim()
               : acao === "teste"      ? await boletim(((await rpc("tempo_tg_admins")) as number[])[0])
               : acao === "teste_alertas" ? await alertas(((await rpc("tempo_tg_admins")) as number[])[0])
+              : acao === "fixar"     ? await (async () => {   // fixa o painel para quem ja esta inscrito
+                  const ds = (await rpc("tempo_tg_destinatarios")) as { chat_id: number }[];
+                  for (const d of ds) await fixarPainel(d.chat_id).catch(() => {});
+                  return { fixados: ds.length };
+                })()
               : await avisosTodos();
-      if (acao !== "configurar" && !acao.startsWith("teste")) {
+      if (acao !== "configurar" && acao !== "fixar" && !acao.startsWith("teste")) {
         try {
           await sb.rpc("tempo_log_coleta", { p_fonte: "telegram", p_ms: Date.now() - t0, p_ok: true,
                                              p_n: (r as any).enviados ?? 0, p_erro: null });
