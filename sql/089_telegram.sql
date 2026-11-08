@@ -115,7 +115,7 @@ $$;
 create or replace function public.tempo_tg_plano_trovoada()
 returns jsonb language plpgsql security definer set search_path = tempo, public as $$
 declare
-  reg record; st tempo.tg_regiao_trovoada; plano jsonb := '[]'; nivel text;
+  reg record; st tempo.tg_regiao_trovoada; plano jsonb := '[]'; v_nivel text;
   nomes text[]; novos text[]; mun jsonb; manda text;
 begin
   if (select max(quadro) from tempo.trovoada_estado) < now() - interval '30 minutes' then
@@ -138,23 +138,23 @@ begin
     if not found then
       insert into tempo.tg_regiao_trovoada (regiao) values (reg.regiao) returning * into st;
     end if;
-    nivel := case when reg.tem_no then 'no_municipio' when reg.tem_cam then 'a_caminho' end;
+    v_nivel := case when reg.tem_no then 'no_municipio' when reg.tem_cam then 'a_caminho' end;
     nomes := coalesce(reg.nomes, '{}');
     manda := null;
 
-    if nivel is not null then
+    if v_nivel is not null then
       novos := array(select unnest(nomes) except select unnest(st.municipios));
       if not st.aberto or st.ultimo_envio < now() - interval '3 hours' then
-        manda := nivel;
-      elsif nivel = 'no_municipio' and st.nivel = 'a_caminho' then
-        manda := nivel;
+        manda := v_nivel;
+      elsif v_nivel = 'no_municipio' and st.nivel = 'a_caminho' then
+        manda := v_nivel;
       elsif cardinality(novos) > 0 and st.ultimo_envio < now() - interval '30 minutes' then
-        manda := nivel;
+        manda := v_nivel;
       end if;
       if manda is not null then
         update tempo.tg_regiao_trovoada
            set aberto = true,
-               nivel = case when st.aberto and st.nivel = 'no_municipio' then 'no_municipio' else nivel end,
+               nivel = case when st.aberto and st.nivel = 'no_municipio' then 'no_municipio' else v_nivel end,
                municipios = array(select distinct unnest(st.municipios || nomes)),
                ultimo_envio = now()
          where regiao = reg.regiao;
