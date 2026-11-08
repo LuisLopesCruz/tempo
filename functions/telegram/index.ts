@@ -5,7 +5,8 @@
 //   POST do Telegram (webhook)       -> conversa: /start, /regioes, /parar, /ajuda
 //                                      e os botoes. Autentica pelo cabecalho
 //                                      X-Telegram-Bot-Api-Secret-Token.
-//   POST do pg_cron ?acao=avisos     -> aviso imediato de trovoada (a cada 6 min)
+//   POST do pg_cron ?acao=avisos     -> avisos imediatos: trovoada + INMET, Defesa Civil,
+//                                      risco eletrico e chuva forte medida (a cada 6 min)
 //   POST do pg_cron ?acao=boletim    -> boletim das 06h, 12h, 18h e 00h (Brasilia)
 //   POST manual    ?acao=configurar  -> registra webhook e menu no Telegram (1 vez)
 // As duas ultimas autenticam por x-tempo-secret, como os coletores.
@@ -93,8 +94,9 @@ const AJUDA =
   "/ajuda — esta mensagem\n\n" +
   "<b>Boletim</b> às 06h, 12h, 18h e 00h (este sem som): chance de chuva, acumulado, rajada, " +
   "risco elétrico e alertas oficiais, com os mesmos números do painel.\n" +
-  "<b>Aviso imediato</b> de trovoada se aproximando do seu município, com base nas descargas " +
-  "detectadas pela REDEMET (Força Aérea), atualizadas a cada 6 min.";
+  "<b>Aviso imediato</b> (a qualquer hora, quando começa ou piora): trovoada se aproximando do " +
+  "seu município (descargas da REDEMET, a cada 6 min), alerta laranja ou vermelho do INMET, " +
+  "risco alto da Defesa Civil, risco elétrico alto e chuva forte medida nos pluviômetros.";
 
 // ------------------------------------------------------------ conversa
 async function conversa(upd: any) {
@@ -199,7 +201,8 @@ async function botao(q: any) {
 }
 
 // ------------------------------------------------------------ aviso de trovoada
-type Mun = { nome: string; situacao: string; dist_km: number | null; chegada_em: string | null };
+type Mun = { nome: string; situacao: string; dist_km: number | null; chegada_em: string | null;
+  vem_de?: string | null; velocidade_kmh?: number | null };
 type Item = { regiao: string; tipo: string; silencioso: boolean; municipios: Mun[]; quadro: string };
 
 function blocoRegiao(it: Item, comTitulo = true): string {
@@ -219,7 +222,12 @@ function blocoRegiao(it: Item, comTitulo = true): string {
     if (cam.length) s += `\nA caminho: ${lista(cam)}`;
   } else {
     s += `⚡ <b>Trovoada a caminho · ${esc(it.regiao)}</b>\n${lista(cam)}`;
-    if (chegadas.length) s += `\nChegada estimada a partir de ~${hm(chegadas[0])}`;
+    // rumo e velocidade do municipio mais proximo da trovoada (o primeiro da lista)
+    const ref = cam.find((m) => m.vem_de);
+    const mov = ref?.vem_de ? `vindo de ${ref.vem_de}` +
+      (ref.velocidade_kmh ? ` a ~${Math.round(ref.velocidade_kmh)} km/h` : "") : "";
+    const partes = [chegadas.length ? `Chegada estimada ~${hm(chegadas[0])}` : "", mov].filter(Boolean);
+    if (partes.length) s += "\n" + partes.join(" · ");
   }
   return s;
 }
@@ -253,6 +261,115 @@ async function avisos() {
     }
   }
   return { plano: plano.length, enviados };
+}
+
+// ------------------------------------------------------------ avisos imediatos 2 a 5
+// Formato aprovado pelo usuario em 07/11. A decisao de O QUE avisar (e a
+// memoria do que ja foi dito) fica no banco: tempo_tg_plano_alertas.
+type Alerta = { tipo: string; regiao: string; [k: string]: any };
+
+function diaHora(iso: string): string {
+  const t = new Date(new Date(iso).getTime() - 3 * 3_600_000), h = new Date(Date.now() - 3 * 3_600_000);
+  const mesmo = t.toISOString().slice(0, 10) === h.toISOString().slice(0, 10);
+  const dia = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][t.getUTCDay()];
+  return (mesmo ? "" : `${dia} ${String(t.getUTCDate()).padStart(2, "0")}/${String(t.getUTCMonth() + 1).padStart(2, "0")} `) + hm(iso);
+}
+// O INMET manda os riscos como ["frase. Risco de ..."]: fica a primeira frase,
+// que e a que diz o que vem (chuva de tanto, vento de tanto).
+function resumoRiscos(r: string | null): string {
+  if (!r) return "";
+  let s = r.trim();
+  if (s.startsWith("[")) { try { s = String(JSON.parse(s)[0] ?? ""); } catch { /* fica como veio */ } }
+  s = s.split(/\.\s+(?=Risco|Baixo|Alto|Grande)/)[0].replace(/\.\s*$/, "").replace(/\s+/g, " ");
+  return s ? s[0].toLowerCase() + s.slice(1) : "";
+}
+const lista = (xs: string[]) => xs.map(esc).join(", ");
+
+function blocoAlerta(a: Alerta): string {
+  if (a.tipo === "inmet") {
+    const sev = a.severidade === "grande_perigo" ? ["🔴", "Grande Perigo"] : ["🟠", "Perigo"];
+    const titulo = a.como === "elevou"
+      ? `🔴 <b>INMET elevou para Grande Perigo · ${esc(a.descricao)} · ${esc(a.regiao)}</b>`
+      : `${sev[0]} <b>INMET · ${esc(a.descricao)} — ${sev[1]} · ${esc(a.regiao)}</b>`;
+    const comecou = new Date(a.inicio).getTime() <= Date.now();
+    const quando = comecou ? `Até ${diaHora(a.fim)}` : `De ${diaHora(a.inicio)} até ${diaHora(a.fim)}`;
+    const riscos = resumoRiscos(a.riscos);
+    return `${titulo}\n${lista(a.municipios)}\n${quando}${riscos ? " · " + esc(riscos) : ""}`;
+  }
+  if (a.tipo === "dc") {
+    const ROT: Record<string, string> = { geologico: "Risco geológico (deslizamentos)", hidrologico: "Risco hidrológico (enchentes)" };
+    const linhas: string[] = [];
+    for (const tipo of ["geologico", "hidrologico"]) {
+      for (const nv of ["muito_alto", "alto"]) {
+        const ms = a.itens.filter((i: any) => i.tipo === tipo && i.nivel === nv).map((i: any) => i.municipio);
+        if (ms.length) linhas.push(`${ROT[tipo]} <b>${nv === "muito_alto" ? "MUITO ALTO" : "ALTO"}</b>: ${lista(ms)}`);
+      }
+      // moderado entra como contexto so quando e pouco (a fonte poe 80+ municipios em moderado)
+      const mod = (a.moderados ?? []).filter((i: any) => i.tipo === tipo).map((i: any) => i.municipio);
+      if (mod.length && mod.length <= 3) linhas.push(`${ROT[tipo]} <b>MODERADO</b>: ${lista(mod)}`);
+    }
+    return `🏔️ <b>Defesa Civil · ${esc(a.regiao)}</b>\n` + linhas.join("\n");
+  }
+  if (a.tipo === "risco") {
+    return `🔌 <b>Risco elétrico ALTO ${a.quando} · ${esc(a.regiao)}</b>\n${lista(a.municipios)} · motivo: ${esc(a.motivo)}`;
+  }
+  if (a.tipo === "chuva") {
+    const nf1 = (v: number) => Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+    return `🌧️ <b>Chuva forte medida · ${esc(a.regiao)}</b>\n` + a.itens.map((i: any) =>
+      i.mm1h >= 30 ? `${esc(i.municipio)}: ${nf1(i.mm1h)} mm na última hora`
+                   : `${esc(i.municipio)}: ${nf1(i.mm24)} mm em 24 h`).join("\n");
+  }
+  return "";
+}
+
+// Junta os blocos de uma pessoa em mensagens de ate ~3.800 caracteres (o
+// limite do Telegram e 4.096).
+function empacotar(blocos: string[]): string[] {
+  const out: string[] = [];
+  let cur = "";
+  for (const b of blocos) {
+    if (cur && cur.length + b.length + 2 > 3800) { out.push(cur); cur = ""; }
+    cur = cur ? cur + "\n\n" + b : b;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+async function alertas(soChat?: number) {
+  const plano = ((await rpc("tempo_tg_plano_alertas")) as Alerta[])
+    .sort((a, b) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao));
+  if (!plano.length) return { alertas: 0, enviados: 0 };
+  const dest = (await rpc("tempo_tg_destinatarios")) as { chat_id: number; regioes: string[]; todas: boolean }[];
+  let enviados = 0;
+  for (const d of dest) {
+    if (soChat && d.chat_id !== soChat) continue;
+    const meus = d.todas ? plano : plano.filter((p) => d.regioes.includes(p.regiao));
+    for (const texto of empacotar(meus.map(blocoAlerta).filter(Boolean))) {
+      try {
+        await enviar(d.chat_id, texto);
+        enviados++;
+        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "alerta", p_regiao: null, p_ok: true, p_erro: null });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "alerta", p_regiao: null, p_ok: false, p_erro: msg.slice(0, 300) });
+        if (/blocked|deactivated|chat not found/i.test(msg)) {
+          await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
+          break;
+        }
+      }
+    }
+  }
+  return { alertas: plano.length, enviados };
+}
+
+// Trovoada e os demais avisos na mesma rodada; um tipo falhar nao derruba o outro.
+async function avisosTodos() {
+  const r: Record<string, unknown> = {};
+  try { Object.assign(r, await avisos()); } catch (e) { r.erro_trovoada = e instanceof Error ? e.message : String(e); }
+  try { const x = await alertas(); r.alertas = x.alertas; r.enviados = ((r.enviados as number) ?? 0) + x.enviados; }
+  catch (e) { r.erro_alertas = e instanceof Error ? e.message : String(e); }
+  if (r.erro_trovoada || r.erro_alertas) throw new Error([r.erro_trovoada, r.erro_alertas].filter(Boolean).join(' | '));
+  return r;
 }
 
 // ------------------------------------------------------------ boletim de 6 em 6 h
@@ -395,8 +512,8 @@ async function configurar() {
   ] });
   await tg("setMyDescription", { description:
     "Tempo no estado do Rio de Janeiro, por região: boletim de 6 em 6 h com os números do painel " +
-    "TEMPO-RJ e aviso imediato de trovoada se aproximando do seu município (descargas detectadas " +
-    "pela REDEMET, Força Aérea). Acesso mediante aprovação." });
+    "TEMPO-RJ e avisos imediatos — trovoada se aproximando, alertas do INMET e da Defesa Civil, " +
+    "risco elétrico e chuva forte medida. Acesso mediante aprovação." });
   return { bot: eu.username, webhook: url };
 }
 
@@ -414,8 +531,9 @@ Deno.serve(async (req: Request) => {
       const r = acao === "configurar" ? await configurar()
               : acao === "boletim"    ? await boletim()
               : acao === "teste"      ? await boletim(((await rpc("tempo_tg_admins")) as number[])[0])
-              : await avisos();
-      if (acao !== "configurar" && acao !== "teste") {
+              : acao === "teste_alertas" ? await alertas(((await rpc("tempo_tg_admins")) as number[])[0])
+              : await avisosTodos();
+      if (acao !== "configurar" && !acao.startsWith("teste")) {
         try {
           await sb.rpc("tempo_log_coleta", { p_fonte: "telegram", p_ms: Date.now() - t0, p_ok: true,
                                              p_n: (r as any).enviados ?? 0, p_erro: null });

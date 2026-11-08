@@ -101,15 +101,26 @@ Deno.serve(async (req: Request) => {
     });
 
     const linhas = pontos.map((pt) => {
+      const maisPerto: number[] = [];   // indice da celula mais proxima em cada quadro
       const dist = quadros.map((q) => {
-        let m = Infinity;
+        let m = Infinity, im = -1;
         for (let i = 0; i < q.la.length; i++) {
           const dx = (q.lo[i] - pt.lon) * KX, dy = (q.la[i] - pt.lat) * KY;
           const v = dx * dx + dy * dy;
-          if (v < m) m = v;
+          if (v < m) { m = v; im = i; }
         }
+        maisPerto.push(im);
         return Math.sqrt(m);   // Infinity se o quadro nao tem celula no RJ
       });
+      // De onde a trovoada vem: o lado do municipio em que esta a celula mais
+      // proxima no quadro do aviso. 8 rumos, em palavras ("vindo de oeste").
+      const rumo = (j: number) => {
+        const i = maisPerto[j];
+        if (i < 0) return null;
+        const q = quadros[j];
+        const ang = (Math.atan2((q.lo[i] - pt.lon) * KX, (q.la[i] - pt.lat) * KY) * 180 / Math.PI + 360) % 360;
+        return ["norte", "nordeste", "leste", "sudeste", "sul", "sudoeste", "oeste", "noroeste"][Math.round(ang / 45) % 8];
+      };
       const n50 = (() => {
         const q = quadros[quadros.length - 1];
         let c = 0;
@@ -122,7 +133,7 @@ Deno.serve(async (req: Request) => {
 
       let noMun = false;
       let perto = 0;                                   // 0 = nenhum quadro perto
-      let a: { t: number; d: number; v: number } | undefined;
+      let a: { t: number; d: number; v: number; j: number } | undefined;
       for (let j = 0; j < quadros.length; j++) {
         const q = quadros[j];
         const idade = (ultimo - q.t) / 60_000;
@@ -135,7 +146,7 @@ Deno.serve(async (req: Request) => {
         const v = dif / ((q.t - quadros[k].t) / 3_600_000);
         // dist[k] = Infinity (nao havia celula ha 30 min) da dif infinita: e celula
         // nova, nao aproximacao — o teto de velocidade a descarta.
-        if (dif >= APROX_KM && v <= VMAX_KMH) a = { t: q.t, d: dist[j], v };
+        if (dif >= APROX_KM && v <= VMAX_KMH) a = { t: q.t, d: dist[j], v, j };
       }
 
       const situacao = noMun ? "no_municipio" : a ? "a_caminho" : perto ? "perto" : "nenhuma";
@@ -150,6 +161,7 @@ Deno.serve(async (req: Request) => {
           ? new Date(a.t + ((a.d - NO_MUNICIPIO_KM) / a.v) * 3_600_000).toISOString() : null,
         celulas_50km: n50,
         ultima_perto: perto ? new Date(perto).toISOString() : null,
+        vem_de: situacao === "a_caminho" && a ? rumo(a.j) : null,
       };
     });
 
