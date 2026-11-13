@@ -7,8 +7,14 @@
 // curtissimo prazo, nao previsao — e por isso nao entra em nenhuma conta de
 // probabilidade nem de impacto (o D13 mediu: no total do dia nao acrescenta).
 //
-// A REGRA foi testada no D15 (calibracao/13 e 14), sobre 14 dias de tempestade
-// + 07/11. Por regiao: 3 de cada 4 avisos certos, antecedencia mediana 1h47.
+// A REGRA (D17, 13/11/2026): "a_caminho" = celula a 10-30 km nos ultimos 20
+// min. A regra antiga (D15) exigia que a celula mais proxima estivesse 5 km mais
+// perto que ha 30 min, mas em tarde de verao isso media celula NOVA nascendo
+// mais perto, nao movimento: acertava 38% por municipio, contra 50% do criterio
+// de 30 km. O horario de chegada saiu: era precisao falsa.
+// A chance de cada aviso NAO e calculada aqui: o banco a aprende, conferindo
+// cada aviso 2 h depois (sql/101). Aqui so se mandam as caracteristicas do
+// momento (distancia, celulas a ate 50 km, aproximacao) e os quadros brutos.
 //
 // SEM ESTADO: cada execucao le os ultimos ~70 min de quadros (anima=12) e
 // recalcula tudo. Nao depende de a execucao anterior ter dado certo.
@@ -29,9 +35,8 @@ const KX = 111.32 * Math.cos(-22 * Math.PI / 180);   // km por grau de longitude
 const KY = 110.57;
 
 const NO_MUNICIPIO_KM = 10;
-const RAIO_KM = 50;
-const APROX_KM = 5;        // tem de estar pelo menos isto mais perto que ha ~30 min
-const VMAX_KMH = 90;       // acima disto e celula NOVA nascendo perto, nao movimento
+const RAIO_KM = 50;         // "perto" (e o "se afastou" do bot)
+const ALERTA_KM = 30;       // "a_caminho": trovoada que pode chegar
 const JANELA_MIN = 20;     // histerese de no_municipio / a_caminho
 const PERTO_MIN = 60;      // histerese de perto (e o "se afastou" do bot)
 
@@ -121,51 +126,51 @@ Deno.serve(async (req: Request) => {
         const ang = (Math.atan2((q.lo[i] - pt.lon) * KX, (q.la[i] - pt.lat) * KY) * 180 / Math.PI + 360) % 360;
         return ["norte", "nordeste", "leste", "sudeste", "sul", "sudoeste", "oeste", "noroeste"][Math.round(ang / 45) % 8];
       };
-      const n50 = (() => {
-        const q = quadros[quadros.length - 1];
+      const celulas50 = (j: number) => {
+        const q = quadros[j];
         let c = 0;
         for (let i = 0; i < q.la.length; i++) {
           const dx = (q.lo[i] - pt.lon) * KX, dy = (q.la[i] - pt.lat) * KY;
           if (dx * dx + dy * dy <= RAIO_KM * RAIO_KM) c++;
         }
         return c;
-      })();
+      };
 
       let noMun = false;
       let perto = 0;                                   // 0 = nenhum quadro perto
-      let a: { t: number; d: number; v: number; j: number } | undefined;
+      let a = -1;                                      // quadro mais recente com celula a 10-30 km
       for (let j = 0; j < quadros.length; j++) {
-        const q = quadros[j];
-        const idade = (ultimo - q.t) / 60_000;
-        if (dist[j] <= RAIO_KM && idade <= PERTO_MIN) perto = Math.max(perto, q.t);
+        const idade = (ultimo - quadros[j].t) / 60_000;
+        if (dist[j] <= RAIO_KM && idade <= PERTO_MIN) perto = Math.max(perto, quadros[j].t);
         if (idade > JANELA_MIN) continue;
         if (dist[j] <= NO_MUNICIPIO_KM) noMun = true;
-        const k = anterior[j];
-        if (k < 0 || !(dist[j] > NO_MUNICIPIO_KM && dist[j] <= RAIO_KM)) continue;
-        const dif = dist[k] - dist[j];
-        const v = dif / ((q.t - quadros[k].t) / 3_600_000);
-        // dist[k] = Infinity (nao havia celula ha 30 min) da dif infinita: e celula
-        // nova, nao aproximacao — o teto de velocidade a descarta.
-        if (dif >= APROX_KM && v <= VMAX_KMH) a = { t: q.t, d: dist[j], v, j };
+        else if (dist[j] <= ALERTA_KM) a = j;
       }
 
-      const situacao = noMun ? "no_municipio" : a ? "a_caminho" : perto ? "perto" : "nenhuma";
+      const situacao = noMun ? "no_municipio" : a >= 0 ? "a_caminho" : perto ? "perto" : "nenhuma";
       const dAgora = dist[dist.length - 1];
+      const k = a >= 0 ? anterior[a] : -1;
+      const aprox = k >= 0 && Number.isFinite(dist[k]) ? dist[k] - dist[a] : null;
       return {
         municipio_ibge: pt.ibge,
         quadro: new Date(ultimo).toISOString(),
         situacao,
         dist_km: Number.isFinite(dAgora) ? Math.round(dAgora * 10) / 10 : null,
-        velocidade_kmh: situacao === "a_caminho" && a ? Math.round(a.v) : null,
-        chegada_em: situacao === "a_caminho" && a && a.v >= 5
-          ? new Date(a.t + ((a.d - NO_MUNICIPIO_KM) / a.v) * 3_600_000).toISOString() : null,
-        celulas_50km: n50,
+        dist_alerta_km: a >= 0 ? Math.round(dist[a] * 10) / 10 : null,
+        velocidade_kmh: null,
+        chegada_em: null,
+        celulas_50km: celulas50(a >= 0 ? a : quadros.length - 1),
+        aprox_km: aprox != null ? Math.round(aprox * 10) / 10 : null,
         ultima_perto: perto ? new Date(perto).toISOString() : null,
-        vem_de: situacao === "a_caminho" && a ? rumo(a.j) : null,
+        vem_de: situacao === "a_caminho" ? rumo(a) : null,
       };
     });
 
-    const { data, error } = await sb.rpc("tempo_ingerir_trovoada", { p_rows: linhas });
+    // os quadros vao para o banco: base para testar regras futuras com dado real
+    const pQuadros = quadros.map((q) => ({ t: new Date(q.t).toISOString(),
+      la: q.la.map((v) => Math.round(v * 100) / 100), lo: q.lo.map((v) => Math.round(v * 100) / 100) }));
+
+    const { data, error } = await sb.rpc("tempo_ingerir_trovoada", { p_rows: linhas, p_quadros: pQuadros });
     if (error) throw new Error("ingestao: " + error.message);
     n = (data as number) ?? 0;
   } catch (e) {

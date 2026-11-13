@@ -140,3 +140,25 @@ for R in (50, 30, 20):
     P = (D > 10) & (D <= R)
     av, acerto, cobre, antec, _ = medir(P)
     print("%-34s %7d %8.0f%% %8.0f%% %5.0f min" % ("so 'tem celula a <=%d km'" % R, av, 100 * acerto, 100 * cobre, antec))
+
+# ---------------------------------------------------------------- ponto de partida do aprendizado
+# Regra nova (13/11): celula a 10-30 km. Taxa de acerto por FAIXA no inicio do
+# episodio (distancia x celulas a ate 50 km). Vira a tabela tempo.trovoada_prior;
+# dai em diante cada aviso real verificado vai puxando a taxa para o observado.
+def faixa(d, n):
+    fd = "10-20" if d <= 20 else "20-30"
+    fc = "1-4" if n < 5 else ("5-14" if n < 15 else "15+")
+    return fd + "|" + fc
+reg_ep = []
+A = (D > 10) & (D <= 30)
+for i in range(NM):
+    ultimo = None
+    for j in np.where(A[i])[0]:
+        if ultimo is None or Qm[j] - Qm[ultimo] >= 180:
+            w = CHEGA[i] & (Qm > Qm[j]) & (Qm <= Qm[j] + 120)
+            reg_ep.append((faixa(D[i, j], N50[i, j]), bool(w.any())))
+        ultimo = j
+ep = pd.DataFrame(reg_ep, columns=["faixa", "chegou"])
+print("\nPRIOR por faixa (regra nova, 30 km):")
+print(ep.groupby("faixa").chegou.agg(["size", "mean"]).round(3).to_string())
+print("geral: n=%d acerto=%.3f" % (len(ep), ep.chegou.mean()))

@@ -118,8 +118,9 @@ const AJUDA =
   "/ajuda — esta mensagem\n\n" +
   "<b>Boletim</b> às 06h, 12h, 18h e 00h (este sem som): chance de chuva, acumulado, rajada, " +
   "risco elétrico e alertas oficiais, com os mesmos números do painel.\n" +
-  "<b>Aviso imediato</b> (a qualquer hora, quando começa ou piora): trovoada se aproximando do " +
-  "seu município (descargas da REDEMET, a cada 6 min), alerta laranja ou vermelho do INMET, " +
+  "<b>Aviso imediato</b> (a qualquer hora, quando começa ou piora): trovoada a até 30 km do " +
+  "seu município, com a chance de chegar (descargas da REDEMET, a cada 6 min; a chance é aprendida " +
+  "conferindo cada aviso 2 h depois), alerta laranja ou vermelho do INMET, " +
   "risco alto da Defesa Civil, risco elétrico alto e chuva forte medida nos pluviômetros.";
 
 // ------------------------------------------------------------ conversa
@@ -235,16 +236,28 @@ async function botao(q: any) {
 // Modelo aprovado pelo usuario em 08/11: todo aviso responde, na mesma ordem,
 // O QUE · ONDE · QUANDO · O QUE ESPERAR · O QUE FAZER — para a pessoa entender
 // sem abrir o painel.
-type Mun = { nome: string; situacao: string; dist_km: number | null; chegada_em: string | null;
-  vem_de?: string | null; velocidade_kmh?: number | null };
-type Item = { regiao: string; tipo: string; silencioso: boolean; municipios: Mun[]; quadro: string };
+// Regra nova em 13/11 (D17): "a_caminho" = trovoada a 10-30 km, SEM horario
+// de chegada (era precisao falsa). Cada municipio leva a chance APRENDIDA da sua
+// faixa (sql/101): o banco confere cada aviso 2 h depois e corrige a taxa.
+type Mun = { nome: string; situacao: string; dist_km: number | null;
+  vem_de?: string | null; chance?: number | null };
+type Item = { regiao: string; tipo: string; silencioso: boolean; municipios: Mun[]; quadro: string;
+  desempenho?: { verificados: number; acertos: number } };
+
+const LADO: Record<string, string> = { norte: "ao norte", sul: "ao sul", leste: "a leste", oeste: "a oeste",
+  nordeste: "a nordeste", noroeste: "a noroeste", sudeste: "a sudeste", sudoeste: "a sudoeste" };
+const pct = (c: number | null | undefined) => c != null ? `${Math.round(c * 100)}%` : "";
+function linhaProxima(m: Mun): string {
+  const onde = [m.dist_km != null ? `~${Math.round(m.dist_km)} km` : "", m.vem_de ? LADO[m.vem_de] ?? "" : ""]
+    .filter(Boolean).join(" ");
+  return `• ${esc(m.nome)}` + (onde ? ` — trovoada a ${onde}` : "") +
+         (m.chance != null ? ` · <b>${pct(m.chance)}</b> de chance de chegar` : "");
+}
 
 function blocoRegiao(it: Item): string {
   const muns = it.municipios ?? [];
   const no = muns.filter((m) => m.situacao === "no_municipio");
   const cam = muns.filter((m) => m.situacao === "a_caminho");
-  const futuro = (iso: string | null) => iso && new Date(iso).getTime() > Date.now();
-  const comKm = (ms: Mun[]) => ms.map((m) => esc(m.nome) + (m.dist_km != null ? ` (~${Math.round(m.dist_km)} km)` : "")).join(", ");
   const nomes = (ms: Mun[]) => ms.map((m) => esc(m.nome)).join(", ");
   if (it.tipo === "afastou") {
     return `✅ <b>TROVOADA SE AFASTOU · ${esc(it.regiao)}</b>\n` +
@@ -254,27 +267,27 @@ function blocoRegiao(it: Item): string {
   if (it.tipo === "no_municipio") {
     return [`⚡⚡ <b>TROVOADA SOBRE A CIDADE · ${esc(it.regiao)}</b>`,
       `<b>Onde:</b> ${nomes(no)} (descargas a até 10 km)`,
-      ...(cam.length ? [`<b>A caminho também:</b> ${comKm(cam)}`] : []),
+      ...(cam.length ? ["<b>Próxima também:</b>", ...cam.map(linhaProxima)] : []),
       "<b>O que esperar:</b> raios, chuva forte e rajadas nos próximos 30 a 60 minutos.",
       `<b>Origem:</b> descargas atmosféricas detectadas pela Força Aérea (REDEMET) a até 10 km do município nos últimos 20 min — leitura das ${hm(it.quadro)}.`,
       "<b>O que fazer:</b> fique em local fechado e tire aparelhos sensíveis da tomada."].join("\n");
   }
-  const chegadas = cam.map((m) => m.chegada_em).filter(futuro).sort() as string[];
-  const ref = cam.find((m) => m.vem_de);
-  const quando = [chegadas.length ? `chegada estimada ~${hm(chegadas[0])}` : "",
-    ref?.vem_de ? `vindo de ${ref.vem_de}` + (ref.velocidade_kmh ? ` a ~${Math.round(ref.velocidade_kmh)} km/h` : "") : ""]
-    .filter(Boolean).join(" · ");
-  return [`⚡ <b>TROVOADA A CAMINHO · ${esc(it.regiao)}</b>`,
-    `<b>Onde:</b> ${comKm(cam)}`,
-    ...(quando ? [`<b>Quando:</b> ${quando}`] : []),
-    "<b>O que esperar:</b> raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia.",
-    `<b>Origem:</b> descargas atmosféricas detectadas pela Força Aérea (REDEMET) — célula a até 50 km que chegou pelo menos 5 km mais perto nos últimos 30 min. Leitura das ${hm(it.quadro)}.`,
+  return [`⚡ <b>TROVOADA PRÓXIMA · ${esc(it.regiao)}</b>`,
+    "<b>Onde:</b>", ...cam.map(linhaProxima),
+    "<b>Quando:</b> pode chegar na próxima hora — ou se desfazer antes. Trovoada de verão costuma nascer e morrer no mesmo lugar.",
+    "<b>O que esperar:</b> se chegar, raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia.",
+    `<b>Origem:</b> descargas atmosféricas detectadas pela Força Aérea (REDEMET) a 10-30 km do município nos últimos 20 min. Leitura das ${hm(it.quadro)}.`,
     "<b>O que fazer:</b> recolha o que estiver solto, evite áreas abertas e carregue o celular."].join("\n");
 }
 function rodapeTrovoada(itens: Item[]): string {
-  // a origem agora vai em cada bloco; o rodape fica so com a confianca medida
-  return itens.some((p) => p.tipo === "a_caminho")
-    ? "\n<i>Em testes com as tempestades de 2026, 3 de cada 4 avisos de \"a caminho\" se confirmaram.</i>" : "";
+  // a confianca MEDIDA: o banco confere cada aviso 2 h depois (sql/101)
+  if (!itens.some((p) => (p.municipios ?? []).some((m) => m.situacao === "a_caminho"))) return "";
+  const d = itens.find((p) => p.desempenho)?.desempenho;
+  if (d && d.verificados >= 20)
+    return `\n<i>A chance é aprendida: nos últimos 90 dias, ${Math.round(100 * d.acertos / d.verificados)}% dos ` +
+           `${d.verificados} avisos de trovoada próxima conferidos se confirmaram. Cada aviso é conferido 2 h depois e corrige a conta.</i>`;
+  return "\n<i>A chance começou nos testes com as tempestades de jan-jul/2026 e se corrige sozinha: " +
+         "cada aviso é conferido 2 h depois.</i>";
 }
 
 // Pedido do usuario (08/11): trovoada a caminho ou sobre a cidade dispara
@@ -284,7 +297,7 @@ function blocoRiscoTrovoada(it: Item): string {
   const sobre = it.tipo === "no_municipio";
   return [`🔌 <b>RISCO DE FALTA DE ENERGIA AGORA · ${esc(it.regiao)}</b>`,
     `<b>Onde:</b> ${muns.map((m) => esc(m.nome)).join(", ")}`,
-    `<b>Por quê:</b> ${sobre ? "trovoada sobre a cidade" : "trovoada a caminho"} (descargas atmosféricas e rajadas)`,
+    `<b>Por quê:</b> ${sobre ? "trovoada sobre a cidade" : "trovoada próxima, que pode chegar"} (descargas atmosféricas e rajadas)`,
     "<b>O que significa:</b> raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica.",
     `<b>Origem:</b> aviso de trovoada do TEMPO-RJ, com base nas descargas detectadas pela Força Aérea (REDEMET) — leitura das ${hm(it.quadro)}.`,
     "<b>O que fazer:</b> carregue celulares e lanternas e tire aparelhos sensíveis da tomada."].join("\n");
@@ -651,9 +664,8 @@ function linhaTrovoada(t: any): string {
   switch (t.situacao) {
     case "no_municipio": return "🔴 <b>No município</b> (descarga a até 10 km nos últimos 20 min)";
     case "a_caminho": {
-      const partes = [`🟠 <b>A caminho</b>: a ${km(t.dist_km)}`];
-      if (t.chegada_em && new Date(t.chegada_em).getTime() > Date.now()) partes.push(`chegada ~${hm(t.chegada_em)}`);
-      if (t.vem_de) partes.push(`vindo de ${t.vem_de}` + (t.velocidade_kmh ? ` a ~${Math.round(t.velocidade_kmh)} km/h` : ""));
+      const partes = [`🟠 <b>Próxima</b>: a ${km(t.dist_km)}` + (t.vem_de ? ` ${LADO[t.vem_de] ?? ""}` : "")];
+      if (t.chance != null) partes.push(`${pct(t.chance)} de chance de chegar`);
       return partes.join(" · ");
     }
     case "perto": return `🟡 <b>Por perto</b>: a ${t.dist_km != null && t.dist_km <= 50 ? km(t.dist_km) : "até 50 km"}, sem se aproximar`;
