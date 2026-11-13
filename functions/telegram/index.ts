@@ -559,7 +559,9 @@ function cardRegiao(r: RegB, rotuloHora: string): string {
   } else {
     L.push(`Hoje até agora: ${nf(medHoje?.mm_hoje ?? 0)} mm` +
            (medHoje?.normal_mes ? ` = ${pctMes(medHoje.mm_hoje, medHoje.normal_mes)} do previsto para o mês` : ""));
-    if (medMes) L.push(`No mês: ${nf(medMes.mm_mes!, 0)} mm = <b>${pctMes(medMes.mm_mes, medMes.normal_mes)} do previsto para o mês</b>`);
+    // formato pedido pelo usuario (10/11): o previsto do mes primeiro, depois o acumulado
+    if (medMes) L.push(`Previsto no mês ${nf(medMes.normal_mes!, 0)} mm: Acumulado ${nf(medMes.mm_mes!, 0)} mm = ` +
+                       `<b>${pctMes(medMes.mm_mes, medMes.normal_mes)} do previsto para o mês</b>`);
   }
   L.push("", "⚡ <b>Risco elétrico hoje</b>", ...linhasRisco(ms), "", "<b>Alertas em vigor</b>");
   // mesmo aviso em dois niveis (amarelo para uns municipios, laranja para outros): fica o pior
@@ -681,7 +683,8 @@ function cardMunicipio(m: any): string {
     L.push(`Hoje até agora: ${nf(m.mm_hoje ?? 0)} mm` +
            (m.normal_mes ? ` = ${pctMes(m.mm_hoje, m.normal_mes)} do previsto para o mês` : ""));
     if (m.mm_mes != null && m.normal_mes) {
-      L.push(`No mês: ${nf(m.mm_mes, 0)} mm = <b>${pctMes(m.mm_mes, m.normal_mes)} do previsto para o mês</b>`);
+      L.push(`Previsto no mês ${nf(m.normal_mes, 0)} mm: Acumulado ${nf(m.mm_mes, 0)} mm = ` +
+             `<b>${pctMes(m.mm_mes, m.normal_mes)} do previsto para o mês</b>`);
     }
   }
   const rv = (n: string | null, p: number | null) =>
