@@ -1,7 +1,11 @@
 // ============================================================================
-// TEMPO-RJ — cards em IMAGEM para o Telegram (teste pedido pelo usuario, 13/11)
+// TEMPO-RJ — cards em IMAGEM para o Telegram (aprovados pelo usuario em 13/11)
 // ----------------------------------------------------------------------------
 // "Quero facilitar a leitura... a imagem da para copiar e compartilhar."
+// Aprovacao: "Ficaram bons, mas se tiver como enriquecer com mais detalhes,
+// melhor, mas sem poluir." Entraram: tabela municipio a municipio no boletim
+// da regiao, os proximos 3 dias no do municipio, porte da tempestade e taxa
+// de acerto aprendida na trovoada, e as duas medidas na chuva forte.
 // O Telegram nao deixa colorir texto; numa imagem a cor e livre. Aqui so se
 // MONTA a arvore de elementos (no formato que o satori le); quem desenha e o
 // index.ts (satori -> SVG -> resvg -> PNG). Sem dependencia nenhuma, para o
@@ -176,6 +180,7 @@ export type Aviso = {
   corDestaque?: string;
   escala?: { niveis: [string, string][]; atual: number; titulo: string };
   secoes: [string, string][]; fazer?: string; origem: string; quando: string; teste?: boolean;
+  resumo?: string;            // texto curto para a legenda da foto
 };
 export function cardAviso(a: Aviso) {
   const corpo: Peca[] = [];
@@ -314,6 +319,7 @@ export function cardBoletimRegiao(r: { regiao: string; muns: MunB[]; inmet: any[
     if (medMes) med.push(barraMes(medMes.mm_mes!, medMes.normal_mes!));
   }
   corpo.push(bloco("Chuva medida", med, 16));
+  if (ms.length > 1) corpo.push(bloco("Município a município", [tabelaMunicipios(ms)], 12));
 
   const nv = (m: MunB) => (m.risco_hoje && RISCO[m.risco_hoje]) ? m.risco_hoje : null;
   const pres = ["alto", "elevado", "moderado", "normal"].filter((k) => ms.some((m) => nv(m) === k));
@@ -337,9 +343,11 @@ export function cardBoletimRegiao(r: { regiao: string; muns: MunB[]; inmet: any[
                 corpo, rodape("previsão das 8 famílias de modelos do TEMPO-RJ, pluviômetros do CEMADEN e Alerta Rio, modelo de impacto (ANEEL), INMET e Defesa Civil.", quando, false));
 }
 
+export type Dia = { dia: string; mm: number; mm_min: number; mm_max: number; familias: number; n: number };
 export function cardBoletimMunicipio(m: MunB & { regiao: string; trovoada: any; inmet: any[]; dc: { tipo: string; nivel: string }[] },
-                                     quando: string) {
+                                     quando: string, dias: Dia[] = []) {
   const corpo: Peca[] = [...blocosPrevisao(m, m.k_forte, m, m.raj24 ?? 0, m.tmin ?? 0, m.tmax ?? 0)];
+  if (dias.length) corpo.push(bloco("Próximos dias", [faixaDias(dias)], 12));
   const med: Peca[] = [];
   if (m.mm_mes == null && m.mm_hoje == null) med.push(texto("Sem pluviômetro com leitura neste município.", { fs: 30, w: CW, cor: C.ink2 }));
   else {
@@ -380,71 +388,252 @@ export function cardBoletimMunicipio(m: MunB & { regiao: string; trovoada: any; 
                 corpo, rodape("previsão das 8 famílias de modelos do TEMPO-RJ, pluviômetros do CEMADEN e Alerta Rio, descargas da REDEMET, modelo de impacto (ANEEL), INMET e Defesa Civil.", quando, false));
 }
 
-// ------------------------------------------------------------------ exemplos dos 9 avisos (marcados TESTE)
+// ------------------------------------------------------------------ enriquecimento dos boletins
+// Tabela municipio a municipio: o card mostra o pior numero da regiao; a
+// tabela mostra ONDE ele esta. O maior de cada coluna sai em negrito.
+function tabelaMunicipios(ms: MunB[]): Peca {
+  const wN = CW - 150 * 3 - 176;
+  const mx6 = Math.max(0, ...ms.map((m) => m.chance6 ?? 0)), mx24 = Math.max(0, ...ms.map((m) => m.mm24 ?? 0));
+  const mxr = Math.max(0, ...ms.map((m) => m.raj24 ?? 0));
+  const num = (txt: string, forte: boolean) =>
+    div({ width: 150, fontSize: 26, justifyContent: "flex-end", fontWeight: forte ? 800 : 400, color: C.ink }, txt);
+  const cab = div({ width: CW, paddingBottom: 10, borderBottom: `2px solid ${C.grid}` },
+    ...[["Município", wN, false], ["Chuva 6 h", 150, true], ["Prev. 24 h", 150, true], ["Rajada", 150, true], ["Risco hoje", 176, false]]
+      .map(([t, w, dir]) => div({ width: w as number, fontSize: 19, fontWeight: 700, color: C.muted, letterSpacing: 1,
+                                  justifyContent: dir ? "flex-end" : "flex-start", paddingLeft: t === "Risco hoje" ? 30 : 0 },
+                                String(t).toUpperCase())));
+  let h = 38;
+  const linhas = ms.map((m) => {
+    const n = texto(m.municipio, { fs: 25, w: wN - 10, lh: 1.2 });
+    const [rn, rc] = RISCO[m.risco_hoje ?? ""] ?? ["–", C.muted];
+    h += Math.max(n[1], 34) + 21;
+    return div({ width: CW, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.grid}` },
+      div({ width: wN }, n[0]),
+      num(m.chance6 != null ? `${Math.round(100 * m.chance6)}%` : "–", mx6 > 0 && m.chance6 === mx6),
+      num(m.mm24 != null ? `${nf(m.mm24)} mm` : "–", mx24 > 0 && m.mm24 === mx24),
+      num(m.raj24 != null ? `${Math.round(m.raj24)} km/h` : "–", mxr > 0 && m.raj24 === mxr),
+      div({ width: 176, paddingLeft: 30, alignItems: "center", gap: 10 },
+          div({ width: 18, height: 18, borderRadius: 9, backgroundColor: rc, flexShrink: 0 }),
+          div({ fontSize: 24, color: C.ink2 }, rn)));
+  });
+  return [div({ flexDirection: "column", width: CW }, cab, ...linhas), h];
+}
+
+// Proximos 3 dias: chuva prevista e quantas das 8 familias de modelos a preveem
+// (8 quadradinhos: cheio = familia que preve chuva).
+function faixaDias(dias: Dia[]): Peca {
+  const gap = 20, w = Math.floor((CW - 2 * gap) / 3);
+  const SEM = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+  const nome = (d: string, i: number) => {
+    if (i === 0) return "Hoje";
+    if (i === 1) return "Amanhã";
+    const t = new Date(d + "T12:00:00Z");
+    return `${SEM[t.getUTCDay()]} ${String(t.getUTCDate()).padStart(2, "0")}/${String(t.getUTCMonth() + 1).padStart(2, "0")}`;
+  };
+  const q = Math.floor((w - 56 - 7 * 6) / 8);
+  return [div({ gap, width: CW }, dias.slice(0, 3).map((d, i) =>
+    div({ flexDirection: "column", width: w, backgroundColor: C.surface, border: `2px solid ${C.grid}`, borderRadius: 18,
+          padding: 26, gap: 10 },
+        div({ fontSize: 22, fontWeight: 700, color: C.muted, letterSpacing: 1.5 }, nome(d.dia, i).toUpperCase()),
+        div({ fontSize: 48, fontWeight: 800, color: d.familias >= 5 ? C.azul : C.ink }, `~${nf(d.mm)} mm`),
+        div({ gap: 6 }, Array.from({ length: d.n || 8 }, (_, k) =>
+          div({ width: q, height: q, borderRadius: 4, backgroundColor: k < d.familias ? C.azul : C.grid }))),
+        div({ fontSize: 22, color: C.ink2 }, `${d.familias} de ${d.n} famílias preveem chuva`)))),
+    22 + 10 + 58 + 10 + q + 10 + 30 + 52 + 4];
+}
+
+// ------------------------------------------------------------------ avisos REAIS (o bot usa estes)
+const LADO: Record<string, string> = { norte: "ao norte", sul: "ao sul", leste: "a leste", oeste: "a oeste",
+  nordeste: "a nordeste", noroeste: "a noroeste", sudeste: "a sudeste", sudoeste: "a sudoeste" };
+// porte da tempestade = celulas do STSC a ate 50 km (as mesmas faixas do aprendizado, sql/101)
+export const porte = (n: number | null | undefined) =>
+  (n ?? 0) >= 15 ? "tempestade organizada" : (n ?? 0) >= 5 ? "grupo de células" : "célula isolada";
+export function hhmm(iso: string): string {
+  const t = new Date(new Date(iso).getTime() - 3 * 3_600_000);
+  return String(t.getUTCHours()).padStart(2, "0") + "h" + String(t.getUTCMinutes()).padStart(2, "0");
+}
+export function diaHora(iso: string): string {
+  const t = new Date(new Date(iso).getTime() - 3 * 3_600_000), h = new Date(Date.now() - 3 * 3_600_000);
+  const dia = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][t.getUTCDay()];
+  return t.toISOString().slice(0, 10) === h.toISOString().slice(0, 10) ? `${hhmm(iso)} de hoje`
+    : `${dia} ${String(t.getUTCDate()).padStart(2, "0")}/${String(t.getUTCMonth() + 1).padStart(2, "0")} ${hhmm(iso)}`;
+}
+// O INMET manda os riscos como ["frase. Risco de ..."]: a 1a frase diz o que vem.
+export function partesRiscos(r: string | null): { esperar: string; riscos: string } {
+  if (!r) return { esperar: "", riscos: "" };
+  let s = r.trim();
+  if (s.startsWith("[")) { try { s = String(JSON.parse(s)[0] ?? ""); } catch { /* fica como veio */ } }
+  s = s.replace(/\s+/g, " ");
+  const k = s.search(/\.\s+(?=Risco|Baixo|Alto|Grande)/);
+  const esperar = (k >= 0 ? s.slice(0, k) : s).replace(/\.\s*$/, "");
+  let riscos = k >= 0 ? s.slice(k + 1).trim().replace(/\.\s*$/, "") : "";
+  riscos = riscos.replace(/^(Baixo |Alto |Grande )?[Rr]isco (potencial )?de /, "");
+  return { esperar, riscos: riscos ? riscos[0].toUpperCase() + riscos.slice(1) : "" };
+}
+const juntar = (xs: string[]) => xs.length <= 1 ? xs.join("") : xs.slice(0, -1).join(", ") + " e " + xs[xs.length - 1];
+const pctTxt = (c: number | null | undefined) => c != null ? `${Math.round(100 * c)}%` : "";
+
+type MunT = { nome: string; situacao: string; dist_km: number | null; vem_de?: string | null; chance?: number | null;
+  celulas_50km?: number | null };
+export type ItemTrovoada = { regiao: string; tipo: string; municipios: MunT[]; quadro: string;
+  desempenho?: { verificados: number; acertos: number } };
+
+function notaAprendizado(d?: { verificados: number; acertos: number }) {
+  return d && d.verificados >= 20
+    ? ` A chance é aprendida: nos últimos 90 dias, ${Math.round(100 * d.acertos / d.verificados)}% dos ${d.verificados} avisos conferidos se confirmaram.`
+    : " A chance começou nos testes de jan-jul/2026 e se corrige sozinha: cada aviso é conferido 2 h depois.";
+}
+const ORIG_REDEMET = "descargas atmosféricas detectadas pela Força Aérea (REDEMET)";
+
+export function avisoTrovoada(it: ItemTrovoada, quando: string): Aviso {
+  const muns = it.municipios ?? [];
+  const no = muns.filter((m) => m.situacao === "no_municipio");
+  const cam = muns.filter((m) => m.situacao === "a_caminho");
+  const kicker = `Aviso imediato · ${it.regiao}`;
+  const prox = (m: MunT) => ({
+    nome: m.nome,
+    detalhe: `trovoada a ~${Math.round(m.dist_km ?? 0)} km${m.vem_de ? " " + (LADO[m.vem_de] ?? "") : ""} · ${porte(m.celulas_50km)}`,
+    valor: m.chance != null ? pctTxt(m.chance) : undefined, rotulo: m.chance != null ? "de chance de chegar" : undefined });
+  if (it.tipo === "afastou") {
+    return { cor: C.verde, icone: "check", kicker, titulo: "Trovoada se afastou", quando,
+      secoes: [["Situação", "Sem descargas a até 50 km na última hora. O risco imediato passou."]],
+      origem: `${ORIG_REDEMET}, leitura das ${hhmm(it.quadro)}.`,
+      resumo: `${it.regiao}: sem descargas a até 50 km na última hora.` } as Aviso;
+  }
+  if (it.tipo === "no_municipio") {
+    return { cor: C.critical, icone: "raio", kicker, titulo: "Trovoada sobre a cidade", quando, corDestaque: C.laranja,
+      destaque: [...no.map((m) => ({ nome: m.nome, detalhe: `descargas a até 10 km · ${porte(m.celulas_50km)}` })),
+                 ...cam.map((m) => ({ ...prox(m), detalhe: "próxima também: " + prox(m).detalhe }))],
+      secoes: [["O que esperar", "Raios, chuva forte e rajadas nos próximos 30 a 60 minutos."]],
+      fazer: "Fique em local fechado e tire aparelhos sensíveis da tomada.",
+      origem: `${ORIG_REDEMET} a até 10 km do município nos últimos 20 min. Leitura das ${hhmm(it.quadro)}.`,
+      resumo: `Descargas a até 10 km de ${juntar(no.map((m) => m.nome))}.` } as Aviso;
+  }
+  return { cor: C.laranja, icone: "raio", kicker, titulo: "Trovoada próxima", quando, destaque: cam.map(prox),
+    secoes: [["Quando", "Pode chegar na próxima hora — ou se desfazer antes. Trovoada de verão costuma nascer e morrer no mesmo lugar."],
+             ["O que esperar", "Se chegar: raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia."]],
+    fazer: "Recolha o que estiver solto, evite áreas abertas e carregue o celular.",
+    origem: `${ORIG_REDEMET} a 10–30 km do município nos últimos 20 min, leitura das ${hhmm(it.quadro)}.` + notaAprendizado(it.desempenho),
+    resumo: cam.map((m) => `${m.nome}${m.chance != null ? " " + pctTxt(m.chance) : ""}`).join(" · ") } as Aviso;
+}
+
+export function avisoRiscoTrovoada(it: ItemTrovoada, quando: string): Aviso {
+  const muns = (it.municipios ?? []).filter((m) => m.situacao === "a_caminho" || m.situacao === "no_municipio");
+  const sobre = it.tipo === "no_municipio";
+  return { cor: sobre ? C.critical : C.laranja, icone: "tomada", kicker: `Aviso imediato · ${it.regiao}`,
+    titulo: "Risco de falta de energia agora", quando, destaque: [{ nome: juntar(muns.map((m) => m.nome)) }],
+    secoes: [["Por quê", sobre ? "Trovoada sobre a cidade (descargas atmosféricas e rajadas)."
+                               : "Trovoada próxima, que pode chegar (descargas atmosféricas e rajadas)."],
+             ["O que significa", "Raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica."]],
+    fazer: "Carregue celulares e lanternas e tire aparelhos sensíveis da tomada.",
+    origem: `aviso de trovoada do TEMPO-RJ, com base nas ${ORIG_REDEMET.replace("descargas atmosféricas detectadas", "descargas detectadas")}, leitura das ${hhmm(it.quadro)}.`,
+    resumo: `${sobre ? "Trovoada sobre a cidade" : "Trovoada próxima"}: ${juntar(muns.map((m) => m.nome))}.` } as Aviso;
+}
+
+const NIV_INMET: [string, string][] = [["Amarelo", C.warning], ["Laranja", C.laranja], ["Vermelho", C.critical]];
+const NIV_DC: [string, string][] = [["Muito baixo", C.good], ["Baixo", "#7bbf3a"], ["Moderado", C.warning], ["Alto", C.laranja], ["Muito alto", C.critical]];
+const NIV_RISCO: [string, string][] = [["Normal", C.muted], ["Moderado", C.warning], ["Elevado", C.laranja], ["Alto", C.critical]];
+
+// Os avisos de tempo_tg_plano_alertas. Defesa Civil vira um card por tipo e
+// nivel (deslizamento e enchente pedem cuidados diferentes).
+export function avisosAlerta(a: any, quando: string): Aviso[] {
+  if (a.tipo === "inmet") {
+    const verm = a.severidade === "grande_perigo";
+    const p = partesRiscos(a.riscos);
+    const comecou = new Date(a.inicio).getTime() <= Date.now();
+    const ms: string[] = a.municipios ?? [];
+    return [{ cor: verm ? C.critical : C.laranja, icone: "alerta", quando,
+      kicker: a.como === "elevou" ? `INMET elevou para vermelho · ${a.regiao}` : `Alerta oficial · ${a.regiao}`,
+      titulo: `INMET: ${a.descricao}`, escala: { niveis: NIV_INMET, atual: verm ? 2 : 1, titulo: "Nível do alerta" },
+      secoes: [[ms.length > 3 ? `Onde · ${ms.length} municípios` : "Onde",
+                juntar(ms) + (a.como === "entrou" ? " (entraram agora no alerta)" : "")],
+               ["Quando", comecou ? `Até ${diaHora(a.fim)}` : `De ${diaHora(a.inicio)} até ${diaHora(a.fim)}`],
+               ...(p.esperar ? [["O que esperar", p.esperar + "."] as [string, string]] : []),
+               ...(p.riscos ? [["Riscos", p.riscos + "."] as [string, string]] : [])],
+      origem: `aviso oficial do INMET (Instituto Nacional de Meteorologia), nível ${verm ? "Grande Perigo" : "Perigo"}, publicado para estes municípios.`,
+      resumo: `${verm ? "Vermelho" : "Laranja"} para ${ms.length} município${ms.length > 1 ? "s" : ""}, ${comecou ? "até " + diaHora(a.fim) : "a partir de " + diaHora(a.inicio)}.` }];
+  }
+  if (a.tipo === "dc") {
+    const TXT: Record<string, [string, string, string, string]> = {
+      geologico: ["deslizamento", "montanha", "O solo está encharcado e há chance real de deslizamento em encostas.",
+        "Fique atento a rachaduras, estalos e água barrenta nas encostas. Em caso de risco, ligue para a Defesa Civil: 199."],
+      hidrologico: ["enchente", "onda", "Rios e córregos podem transbordar e alagar as áreas próximas.",
+        "Evite margens de rios e ruas que costumam alagar. Em caso de risco, ligue para a Defesa Civil: 199."] };
+    const out: Aviso[] = [];
+    for (const tipo of ["geologico", "hidrologico"]) {
+      for (const nv of ["muito_alto", "alto"]) {
+        const ms: string[] = (a.itens ?? []).filter((i: any) => i.tipo === tipo && i.nivel === nv).map((i: any) => i.municipio);
+        if (!ms.length) continue;
+        const t = TXT[tipo], mt = nv === "muito_alto";
+        out.push({ cor: mt ? C.critical : C.laranja, icone: t[1], kicker: `Defesa Civil · ${a.regiao}`, quando,
+          titulo: `Risco ${mt ? "muito alto" : "alto"} de ${t[0]}`,
+          escala: { niveis: NIV_DC, atual: mt ? 4 : 3, titulo: `Nível de risco ${tipo === "geologico" ? "geológico" : "hidrológico"}` },
+          destaque: ms.length <= 4 ? ms.map((n) => ({ nome: n })) : [{ nome: juntar(ms) }],
+          secoes: [["O que significa", t[2]]], fazer: t[3],
+          origem: `Defesa Civil do Estado do RJ (painel CEMADEN-RJ), nível de risco ${tipo === "geologico" ? "geológico" : "hidrológico"} publicado oficialmente para o município.`,
+          resumo: `${juntar(ms)}.` } as Aviso);
+      }
+    }
+    return out;
+  }
+  if (a.tipo === "risco") {
+    const ms: string[] = a.municipios ?? [];
+    const f = a.fator && a.fator >= 1.5 ? Number(a.fator) : null;
+    return [{ cor: C.critical, icone: "tomada", kicker: `Previsão · ${a.regiao}`, quando,
+      titulo: `Risco alto de falta de energia ${a.quando}`,
+      escala: { niveis: NIV_RISCO, atual: 3, titulo: "Risco elétrico previsto" },
+      destaque: [{ nome: juntar(ms), detalhe: f ? "ocorrências na rede elétrica esperadas" : "bem mais ocorrências na rede elétrica que num dia normal",
+                   valor: f ? `${nf(f, 1)}×` : undefined, rotulo: f ? "o de um dia normal" : undefined }],
+      secoes: [["Por quê", String(a.motivo ?? "") + (String(a.motivo ?? "").endsWith(".") ? "" : ".")]],
+      fazer: "Carregue celulares e lanternas e evite deixar a geladeira cheia de perecíveis.",
+      origem: "modelo de impacto do TEMPO-RJ: a previsão das 8 famílias de modelos (rajada, chuva por hora e instabilidade) aplicada ao histórico de interrupções de energia da ANEEL em cada município.",
+      resumo: `${juntar(ms)}${f ? ` — cerca de ${nf(f, 1)}× as ocorrências de um dia normal` : ""}.` } as Aviso];
+  }
+  if (a.tipo === "chuva") {
+    const it: any[] = a.itens ?? [];
+    return [{ cor: C.azul, icone: "chuva", kicker: `Medição · ${a.regiao}`, titulo: "Chuva forte agora", quando,
+      destaque: it.map((i) => {
+        const hora = (i.mm1h ?? 0) >= 30;
+        return { nome: i.municipio,
+          detalhe: (hora ? `${nf(i.mm24 ?? 0, 0)} mm em 24 h` : `${nf(i.mm1h ?? 0, 0)} mm na última hora`) + " · pluviômetro",
+          valor: `${nf(hora ? i.mm1h : i.mm24, 0)} mm`, rotulo: hora ? "na última hora" : "em 24 horas" };
+      }),
+      secoes: [["O que significa", "Chuva intensa, com risco de alagamento em pontos baixos nas próximas horas."]],
+      fazer: "Evite ruas que costumam alagar e não atravesse água corrente.",
+      origem: "pluviômetros do CEMADEN e do Alerta Rio no município" + (it[0]?.hora ? `, leitura das ${hhmm(it[0].hora)}` : "") +
+              ". Limite do aviso: 30 mm em 1 hora ou 50 mm em 24 horas.",
+      resumo: it.map((i) => `${i.municipio} ${nf((i.mm1h ?? 0) >= 30 ? i.mm1h : i.mm24, 0)} mm`).join(" · ") } as Aviso];
+  }
+  return [];
+}
+
+// ------------------------------------------------------------------ exemplos (?acao=teste_cards, so o administrador)
+// Usam os MESMOS construtores dos avisos reais, com dados ficticios marcados TESTE.
 const LAGOS = "Região dos Lagos";
 export function exemplos(quando: string): { nome: string; aviso: Aviso }[] {
   const base = { quando, teste: true };
-  const INMET: [string, string][] = [["Amarelo", C.warning], ["Laranja", C.laranja], ["Vermelho", C.critical]];
-  const DC: [string, string][] = [["Muito baixo", C.good], ["Baixo", "#7bbf3a"], ["Moderado", C.warning], ["Alto", C.laranja], ["Muito alto", C.critical]];
-  const RISC: [string, string][] = [["Normal", C.muted], ["Moderado", C.warning], ["Elevado", C.laranja], ["Alto", C.critical]];
   return [
-    { nome: "Trovoada próxima", aviso: { ...base, cor: C.laranja, icone: "raio", kicker: `Aviso imediato · ${LAGOS}`,
-      titulo: "Trovoada próxima", destaque: [
-        { nome: "Iguaba Grande", detalhe: "trovoada a ~18 km ao norte", valor: "48%", rotulo: "de chance de chegar" },
-        { nome: "São Pedro da Aldeia", detalhe: "trovoada a ~25 km ao norte", valor: "45%", rotulo: "de chance de chegar" },
-        { nome: "Cabo Frio", detalhe: "trovoada a ~28 km a noroeste", valor: "41%", rotulo: "de chance de chegar" }],
-      secoes: [["Quando", "Pode chegar na próxima hora — ou se desfazer antes. Trovoada de verão costuma nascer e morrer no mesmo lugar."],
-               ["O que esperar", "Se chegar: raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia."]],
-      fazer: "Recolha o que estiver solto, evite áreas abertas e carregue o celular.",
-      origem: "descargas atmosféricas detectadas pela Força Aérea (REDEMET) a 10–30 km do município nos últimos 20 min. A chance é aprendida: cada aviso é conferido 2 h depois." } },
-    { nome: "Trovoada sobre a cidade", aviso: { ...base, cor: C.critical, icone: "raio", kicker: `Aviso imediato · ${LAGOS}`,
-      titulo: "Trovoada sobre a cidade", destaque: [
-        { nome: "Silva Jardim", detalhe: "descargas a até 10 km" }, { nome: "Araruama", detalhe: "descargas a até 10 km" },
-        { nome: "São Pedro da Aldeia", detalhe: "próxima também: ~22 km a oeste", valor: "48%", rotulo: "de chance de chegar" }],
-      corDestaque: C.laranja,
-      secoes: [["O que esperar", "Raios, chuva forte e rajadas nos próximos 30 a 60 minutos."]],
-      fazer: "Fique em local fechado e tire aparelhos sensíveis da tomada.",
-      origem: "descargas atmosféricas detectadas pela Força Aérea (REDEMET) a até 10 km do município nos últimos 20 min." } },
-    { nome: "Trovoada se afastou", aviso: { ...base, cor: C.verde, icone: "check", kicker: `Aviso imediato · ${LAGOS}`,
-      titulo: "Trovoada se afastou", secoes: [["Situação", "Sem descargas a até 50 km na última hora. O risco imediato passou."]],
-      origem: "descargas atmosféricas detectadas pela Força Aérea (REDEMET)." } },
-    { nome: "Risco de falta de energia agora", aviso: { ...base, cor: C.laranja, icone: "tomada", kicker: `Aviso imediato · ${LAGOS}`,
-      titulo: "Risco de falta de energia agora", destaque: [{ nome: "Silva Jardim, Araruama e São Pedro da Aldeia" }],
-      secoes: [["Por quê", "Trovoada sobre a cidade (descargas atmosféricas e rajadas)."],
-               ["O que significa", "Raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica."]],
-      fazer: "Carregue celulares e lanternas e tire aparelhos sensíveis da tomada.",
-      origem: "aviso de trovoada do TEMPO-RJ, com base nas descargas detectadas pela Força Aérea (REDEMET)." } },
-    { nome: "Alerta do INMET", aviso: { ...base, cor: C.laranja, icone: "alerta", kicker: `Alerta oficial · ${LAGOS}`,
-      titulo: "INMET: Tempestade", escala: { niveis: INMET, atual: 1, titulo: "Nível do alerta" },
-      secoes: [["Onde", "Araruama, Armação dos Búzios, Arraial do Cabo, Cabo Frio, Iguaba Grande, São Pedro da Aldeia, Saquarema e Silva Jardim"],
-               ["Quando", "Até 23h59 de hoje"],
-               ["O que esperar", "Chuva entre 30 e 60 mm/h ou 50 e 100 mm/dia, ventos intensos (60–100 km/h) e queda de granizo."],
-               ["Riscos", "Corte de energia, queda de galhos de árvores, alagamentos e descargas elétricas."]],
-      origem: "aviso oficial do INMET (Instituto Nacional de Meteorologia), nível Perigo, publicado para estes municípios." } },
-    { nome: "Defesa Civil · deslizamento", aviso: { ...base, cor: C.critical, icone: "montanha", kicker: "Defesa Civil · Serrana",
-      titulo: "Risco de deslizamento", escala: { niveis: DC, atual: 4, titulo: "Nível de risco geológico" },
-      destaque: [{ nome: "Petrópolis" }, { nome: "Teresópolis" }],
-      secoes: [["O que significa", "O solo está encharcado e há chance real de deslizamento em encostas."]],
-      fazer: "Fique atento a rachaduras, estalos e água barrenta nas encostas. Em caso de risco, ligue para a Defesa Civil: 199.",
-      origem: "Defesa Civil do Estado do RJ (painel CEMADEN-RJ), nível de risco geológico publicado oficialmente para o município." } },
-    { nome: "Defesa Civil · enchente", aviso: { ...base, cor: C.laranja, icone: "onda", kicker: "Defesa Civil · Serrana",
-      titulo: "Risco de enchente", escala: { niveis: DC, atual: 3, titulo: "Nível de risco hidrológico" },
-      destaque: [{ nome: "Nova Friburgo" }],
-      secoes: [["O que significa", "Rios e córregos podem transbordar e alagar as áreas próximas."]],
-      fazer: "Evite margens de rios e ruas que costumam alagar. Em caso de risco, ligue para a Defesa Civil: 199.",
-      origem: "Defesa Civil do Estado do RJ (painel CEMADEN-RJ), nível de risco hidrológico publicado oficialmente para o município." } },
-    { nome: "Risco alto de falta de energia (previsto)", aviso: { ...base, cor: C.critical, icone: "tomada", kicker: "Previsão · Noroeste",
-      titulo: "Risco alto de falta de energia amanhã", escala: { niveis: RISC, atual: 3, titulo: "Risco elétrico previsto" },
-      destaque: [{ nome: "Itaperuna, Cambuci e Laje do Muriaé", detalhe: "ocorrências na rede elétrica esperadas", valor: "3,4×", rotulo: "o de um dia normal" }],
-      secoes: [["Por quê", "Rajadas de até 70 km/h e chuva forte previstas pelos modelos."]],
-      fazer: "Carregue celulares e lanternas e evite deixar a geladeira cheia de perecíveis.",
-      origem: "modelo de impacto do TEMPO-RJ: a previsão das 8 famílias de modelos (rajada, chuva por hora e instabilidade) aplicada ao histórico de interrupções de energia da ANEEL em cada município." } },
-    { nome: "Chuva forte agora", aviso: { ...base, cor: C.azul, icone: "chuva", kicker: "Medição · Costa do Sol",
-      titulo: "Chuva forte agora", destaque: [
-        { nome: "Casimiro de Abreu", detalhe: "pluviômetro do CEMADEN", valor: "30 mm", rotulo: "na última hora" },
-        { nome: "Rio das Ostras", detalhe: "pluviômetro do CEMADEN", valor: "52 mm", rotulo: "em 24 horas" }],
-      secoes: [["O que significa", "Chuva intensa, com risco de alagamento em pontos baixos nas próximas horas."]],
-      fazer: "Evite ruas que costumam alagar e não atravesse água corrente.",
-      origem: "pluviômetros do CEMADEN e do Alerta Rio no município. Limite do aviso: 30 mm em 1 hora ou 50 mm em 24 horas." } },
+    { nome: "Trovoada próxima", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "a_caminho", quadro: new Date().toISOString(),
+        municipios: [{ nome: "Iguaba Grande", situacao: "a_caminho", dist_km: 18, vem_de: "norte", chance: 0.48, celulas_50km: 7 },
+                     { nome: "São Pedro da Aldeia", situacao: "a_caminho", dist_km: 25, vem_de: "norte", chance: 0.45, celulas_50km: 3 }] }, quando), ...base } },
+    { nome: "Trovoada sobre a cidade", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "no_municipio", quadro: new Date().toISOString(),
+        municipios: [{ nome: "Silva Jardim", situacao: "no_municipio", dist_km: 6, celulas_50km: 18 },
+                     { nome: "São Pedro da Aldeia", situacao: "a_caminho", dist_km: 22, vem_de: "oeste", chance: 0.48, celulas_50km: 18 }] }, quando), ...base } },
+    { nome: "Trovoada se afastou", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "afastou", quadro: new Date().toISOString(), municipios: [] }, quando), ...base } },
+    { nome: "Risco de falta de energia agora", aviso: { ...avisoRiscoTrovoada({ regiao: LAGOS, tipo: "no_municipio", quadro: new Date().toISOString(),
+        municipios: [{ nome: "Silva Jardim", situacao: "no_municipio", dist_km: 6 }, { nome: "Araruama", situacao: "a_caminho", dist_km: 20 }] }, quando), ...base } },
+    ...avisosAlerta({ tipo: "inmet", regiao: LAGOS, severidade: "perigo", como: "novo", descricao: "Tempestade",
+        inicio: new Date(Date.now() - 3600_000).toISOString(), fim: new Date(Date.now() + 6 * 3600_000).toISOString(),
+        municipios: ["Araruama", "Cabo Frio", "São Pedro da Aldeia", "Saquarema"],
+        riscos: "Chuva entre 30 e 60 mm/h ou 50 e 100 mm/dia, ventos intensos (60-100 km/h) e queda de granizo. Risco de corte de energia, queda de galhos de árvores, alagamentos e descargas elétricas." }, quando)
+      .map((a) => ({ nome: "Alerta do INMET", aviso: { ...a, ...base } })),
+    ...avisosAlerta({ tipo: "dc", regiao: "Serrana", itens: [{ tipo: "geologico", nivel: "muito_alto", municipio: "Petrópolis" },
+        { tipo: "hidrologico", nivel: "alto", municipio: "Nova Friburgo" }] }, quando)
+      .map((a) => ({ nome: "Defesa Civil", aviso: { ...a, ...base } })),
+    ...avisosAlerta({ tipo: "risco", regiao: "Noroeste", quando: "amanhã", municipios: ["Itaperuna", "Cambuci"], fator: 3.4,
+        motivo: "Rajadas de até 70 km/h e chuva forte previstas pelos modelos" }, quando)
+      .map((a) => ({ nome: "Risco alto de falta de energia (previsto)", aviso: { ...a, ...base } })),
+    ...avisosAlerta({ tipo: "chuva", regiao: "Costa do Sol", itens: [{ municipio: "Casimiro de Abreu", mm1h: 30, mm24: 37, hora: new Date().toISOString() }] }, quando)
+      .map((a) => ({ nome: "Chuva forte agora", aviso: { ...a, ...base } })),
   ];
 }

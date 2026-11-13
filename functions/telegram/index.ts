@@ -20,6 +20,9 @@
 // novo para guardar, e o formato hexadecimal e o que o Telegram aceita.
 // ============================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import satori from "npm:satori@0.12.2";
+import { initWasm, Resvg } from "npm:@resvg/resvg-wasm@2.6.2";
+import * as K from "./cards.ts";
 
 const TOKEN = Deno.env.get("TELEGRAM_TOKEN");
 const SEGREDO = Deno.env.get("TEMPO_SEGREDO");
@@ -60,6 +63,115 @@ async function enviar(chat: number, texto: string, extra: Record<string, unknown
     const puro = texto.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
     return await tg("sendMessage", { chat_id: chat, text: puro, disable_web_page_preview: true, ...extra });
   }
+}
+
+// ------------------------------------------------------------ cards em IMAGEM (aprovados em 13/11)
+// Toda mensagem do bot sai como foto (cards.ts desenha) com legenda curta. O
+// texto de antes fica de RESERVA: se a imagem falhar, a pessoa recebe o texto.
+// O Supabase limita a CPU por chamada; entao cada execucao desenha no maximo
+// MAX_IMAGENS e passa o resto da fila para uma nova execucao (?acao=fila), em
+// ordem. Uma imagem serve a todos os destinatarios (file_id do Telegram).
+const MAX_IMAGENS = 2;
+let prontoImg: Promise<{ name: string; data: ArrayBuffer; weight: number; style: "normal" }[]> | null = null;
+function prepararImg() {
+  if (!prontoImg) prontoImg = (async () => {
+    await initWasm(fetch("https://cdn.jsdelivr.net/npm/@resvg/resvg-wasm@2.6.2/index_bg.wasm"));
+    return await Promise.all([400, 600, 700, 800].map(async (w) => ({
+      name: "Inter", weight: w, style: "normal" as const,
+      data: await (await fetch(`https://cdn.jsdelivr.net/npm/@fontsource/inter@5.1.0/files/inter-latin-${w}-normal.woff`)).arrayBuffer(),
+    })));
+  })().catch((e) => { prontoImg = null; throw e; });
+  return prontoImg;
+}
+async function png(card: { no: unknown; altura: number }): Promise<Uint8Array> {
+  const fonts = await prepararImg();
+  const svg = await satori(card.no as any, { width: K.W, height: card.altura, fonts });
+  return new Resvg(svg, { fitTo: { mode: "width", value: K.W } }).render().asPng();
+}
+
+type Destino = { chat: number; silencioso: boolean };
+type CardSpec = { k: "aviso"; a: K.Aviso } | { k: "regiao"; r: any; rotulo: string; quando: string }
+              | { k: "mun"; m: any; dias: K.Dia[]; quando: string };
+type Job = { tipo: string; regiao: string | null; card: CardSpec; legenda: string; texto: string; destinos: Destino[] };
+
+function montarCard(c: CardSpec) {
+  return c.k === "aviso" ? K.cardAviso(c.a)
+       : c.k === "regiao" ? K.cardBoletimRegiao(c.r, c.rotulo, c.quando)
+       : K.cardBoletimMunicipio(c.m, c.quando, c.dias);
+}
+async function foto(chat: number, src: Uint8Array | string, legenda: string, silencioso: boolean, html = true): Promise<any> {
+  const fd = new FormData();
+  fd.append("chat_id", String(chat));
+  fd.append("caption", legenda);
+  if (html) fd.append("parse_mode", "HTML");
+  if (silencioso) fd.append("disable_notification", "true");
+  if (typeof src === "string") fd.append("photo", src);
+  else fd.append("photo", new Blob([src], { type: "image/png" }), "tempo-rj.png");
+  const r = await fetch(`${API}/sendPhoto`, { method: "POST", body: fd, signal: AbortSignal.timeout(30_000) });
+  const j = await r.json().catch(() => ({ ok: false, description: "resposta invalida" }));
+  if (!j.ok) {
+    if (html && /can't parse entities/i.test(j.description ?? ""))
+      return foto(chat, src, legenda.replace(/<[^>]*>/g, ""), silencioso, false);
+    throw new Error(`sendPhoto: ${j.description ?? r.status}`);
+  }
+  return j.result;
+}
+// Quem recebe varias mensagens na mesma rodada ouve UM toque: so a primeira toca.
+function umToque(jobs: Job[]) {
+  const tocou = new Set<number>();
+  for (const j of jobs) for (const d of j.destinos) {
+    if (d.silencioso) continue;
+    if (tocou.has(d.chat)) d.silencioso = true; else tocou.add(d.chat);
+  }
+}
+function encadear(jobs: Job[]) {
+  const p = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/tempo-telegram?acao=fila`, {
+    method: "POST", headers: { "x-tempo-secret": SEGREDO!, "Content-Type": "application/json" },
+    body: JSON.stringify({ jobs }),
+  }).catch(() => {});
+  (globalThis as any).EdgeRuntime?.waitUntil?.(p);
+}
+async function processar(jobs: Job[]): Promise<number> {
+  let enviados = 0, feitas = 0;
+  while (jobs.length) {
+    if (feitas >= MAX_IMAGENS) { encadear(jobs); break; }
+    const j = jobs.shift()!;
+    let imagem: Uint8Array | null = null;
+    try { imagem = await png(montarCard(j.card)); } catch (e) { console.error("card", j.tipo, e instanceof Error ? e.message : e); }
+    feitas++;
+    let fileId: string | null = null;
+    for (const d of j.destinos) {
+      try {
+        if (imagem) {
+          try {
+            const r = await foto(d.chat, fileId ?? imagem, j.legenda, d.silencioso);
+            fileId ??= r?.photo?.[r.photo.length - 1]?.file_id ?? null;
+          } catch (e) {
+            if (/blocked|deactivated|chat not found/i.test(String(e))) throw e;
+            await enviar(d.chat, j.texto, { disable_notification: d.silencioso });   // reserva: o texto
+          }
+        } else {
+          await enviar(d.chat, j.texto, { disable_notification: d.silencioso });
+        }
+        enviados++;
+        await rpc("tempo_tg_log", { p_chat: d.chat, p_tipo: j.tipo, p_regiao: j.regiao, p_ok: true, p_erro: null });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await rpc("tempo_tg_log", { p_chat: d.chat, p_tipo: j.tipo, p_regiao: j.regiao, p_ok: false, p_erro: msg.slice(0, 300) });
+        if (/blocked|deactivated|chat not found/i.test(msg)) await rpc("tempo_tg_status", { p_chat: d.chat, p_status: "parado" });
+      }
+    }
+  }
+  return enviados;
+}
+const EMOJI: Record<string, string> = { raio: "⚡", check: "✅", tomada: "🔌", alerta: "⚠️", montanha: "🏔️", onda: "🌊", chuva: "🌧️" };
+function legendaAviso(a: K.Aviso, regiao: string): string {
+  return `<b>${EMOJI[a.icone] ?? ""} ${esc(a.titulo)} · ${esc(regiao)}</b>` + (a.resumo ? "\n" + esc(a.resumo) : "");
+}
+function agoraTxt(): string {
+  const t = new Date(Date.now() - 3 * 3_600_000);
+  return `${String(t.getUTCDate()).padStart(2, "0")}/${String(t.getUTCMonth() + 1).padStart(2, "0")} ` +
+         `${String(t.getUTCHours()).padStart(2, "0")}h${String(t.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 async function segredoWebhook(): Promise<string> {
@@ -303,39 +415,29 @@ function blocoRiscoTrovoada(it: Item): string {
     "<b>O que fazer:</b> carregue celulares e lanternas e tire aparelhos sensíveis da tomada."].join("\n");
 }
 
-async function avisos() {
-  const plano = (await rpc("tempo_tg_plano_trovoada")) as Item[];
-  if (!plano.length) return { plano: 0, enviados: 0 };
-  const dest = (await rpc("tempo_tg_destinatarios")) as { chat_id: number; regioes: string[]; todas: boolean }[];
-  let enviados = 0;
-  for (const d of dest) {
-    const meus = d.todas ? plano : plano.filter((p) => d.regioes.includes(p.regiao));
-    if (!meus.length) continue;
-    // Quem segue varias regioes recebe UMA mensagem de trovoada por rodada (e,
-    // se houver trovoada chegando, UMA de risco eletrico logo depois).
-    const msgs = [{ tipo: "trovoada", texto: meus.map(blocoRegiao).join("\n\n") + rodapeTrovoada(meus),
-                    silencioso: meus.every((p) => p.silencioso) }];
-    const ativos = meus.filter((p) => p.tipo === "a_caminho" || p.tipo === "no_municipio");
-    if (ativos.length) msgs.push({ tipo: "risco_trovoada", texto: ativos.map(blocoRiscoTrovoada).join("\n\n"), silencioso: false });
-    for (const m of msgs) {
-      try {
-        await enviar(d.chat_id, m.texto, { disable_notification: m.silencioso });
-        enviados++;
-        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: m.tipo,
-          p_regiao: meus.map((p) => p.regiao).join(","), p_ok: true, p_erro: null });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: m.tipo,
-          p_regiao: meus.map((p) => p.regiao).join(","), p_ok: false, p_erro: msg.slice(0, 300) });
-        // Pessoa que bloqueou o bot: para de tentar (senao erra a cada 6 min para sempre).
-        if (/blocked|deactivated|chat not found/i.test(msg)) {
-          await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
-          break;
-        }
-      }
+type Dest = { chat_id: number; regioes: string[]; todas: boolean };
+const segue = (d: Dest, regiao: string) => d.todas || d.regioes.includes(regiao);
+const ordemRegiao = (a: { regiao: string }, b: { regiao: string }) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao);
+
+// Um card por regiao; trovoada chegando ou sobre a cidade gera TAMBEM o card
+// de risco eletrico (pedido do usuario, 08/11: dois avisos).
+async function jobsTrovoada(dest: Dest[], quando: string): Promise<Job[]> {
+  const plano = ((await rpc("tempo_tg_plano_trovoada")) as Item[]).sort(ordemRegiao);
+  const jobs: Job[] = [];
+  for (const it of plano) {
+    const quem = dest.filter((d) => segue(d, it.regiao));
+    if (!quem.length) continue;
+    const a = K.avisoTrovoada(it as K.ItemTrovoada, quando);
+    jobs.push({ tipo: "trovoada", regiao: it.regiao, card: { k: "aviso", a }, legenda: legendaAviso(a, it.regiao),
+                texto: blocoRegiao(it) + rodapeTrovoada([it]),
+                destinos: quem.map((d) => ({ chat: d.chat_id, silencioso: it.silencioso })) });
+    if (it.tipo === "a_caminho" || it.tipo === "no_municipio") {
+      const r = K.avisoRiscoTrovoada(it as K.ItemTrovoada, quando);
+      jobs.push({ tipo: "risco_trovoada", regiao: it.regiao, card: { k: "aviso", a: r }, legenda: legendaAviso(r, it.regiao),
+                  texto: blocoRiscoTrovoada(it), destinos: quem.map((d) => ({ chat: d.chat_id, silencioso: false })) });
     }
   }
-  return { plano: plano.length, enviados };
+  return jobs;
 }
 
 // ------------------------------------------------------------ avisos imediatos 2 a 5
@@ -429,52 +531,34 @@ function blocoAlerta(a: Alerta): string {
   return "";
 }
 
-// Junta os blocos de uma pessoa em mensagens de ate ~3.800 caracteres (o
-// limite do Telegram e 4.096).
-function empacotar(blocos: string[]): string[] {
-  const out: string[] = [];
-  let cur = "";
-  for (const b of blocos) {
-    if (cur && cur.length + b.length + 2 > 3800) { out.push(cur); cur = ""; }
-    cur = cur ? cur + "\n\n" + b : b;
-  }
-  if (cur) out.push(cur);
-  return out;
-}
-
-async function alertas(soChat?: number) {
-  const plano = ((await rpc("tempo_tg_plano_alertas")) as Alerta[])
-    .sort((a, b) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao));
-  if (!plano.length) return { alertas: 0, enviados: 0 };
-  const dest = (await rpc("tempo_tg_destinatarios")) as { chat_id: number; regioes: string[]; todas: boolean }[];
-  let enviados = 0;
-  for (const d of dest) {
-    if (soChat && d.chat_id !== soChat) continue;
-    const meus = d.todas ? plano : plano.filter((p) => d.regioes.includes(p.regiao));
-    for (const texto of empacotar(meus.map(blocoAlerta).filter(Boolean))) {
-      try {
-        await enviar(d.chat_id, texto);
-        enviados++;
-        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "alerta", p_regiao: null, p_ok: true, p_erro: null });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "alerta", p_regiao: null, p_ok: false, p_erro: msg.slice(0, 300) });
-        if (/blocked|deactivated|chat not found/i.test(msg)) {
-          await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
-          break;
-        }
-      }
+// INMET, Defesa Civil, risco eletrico previsto e chuva forte: um card por
+// aviso (Defesa Civil: um por tipo e nivel).
+async function jobsAlertas(dest: Dest[], quando: string): Promise<Job[]> {
+  const plano = ((await rpc("tempo_tg_plano_alertas")) as Alerta[]).sort(ordemRegiao);
+  const jobs: Job[] = [];
+  for (const a of plano) {
+    const quem = dest.filter((d) => segue(d, a.regiao));
+    if (!quem.length) continue;
+    const texto = blocoAlerta(a);
+    for (const av of K.avisosAlerta(a, quando)) {
+      jobs.push({ tipo: "alerta", regiao: a.regiao, card: { k: "aviso", a: av }, legenda: legendaAviso(av, a.regiao),
+                  texto, destinos: quem.map((d) => ({ chat: d.chat_id, silencioso: false })) });
     }
   }
-  return { alertas: plano.length, enviados };
+  return jobs;
 }
 
 // Trovoada e os demais avisos na mesma rodada; um tipo falhar nao derruba o outro.
 async function avisosTodos() {
   const r: Record<string, unknown> = {};
-  try { Object.assign(r, await avisos()); } catch (e) { r.erro_trovoada = e instanceof Error ? e.message : String(e); }
-  try { const x = await alertas(); r.alertas = x.alertas; r.enviados = ((r.enviados as number) ?? 0) + x.enviados; }
-  catch (e) { r.erro_alertas = e instanceof Error ? e.message : String(e); }
+  const dest = (await rpc("tempo_tg_destinatarios")) as Dest[];
+  const quando = agoraTxt();
+  const jobs: Job[] = [];
+  try { jobs.push(...await jobsTrovoada(dest, quando)); } catch (e) { r.erro_trovoada = e instanceof Error ? e.message : String(e); }
+  try { jobs.push(...await jobsAlertas(dest, quando)); } catch (e) { r.erro_alertas = e instanceof Error ? e.message : String(e); }
+  r.cards = jobs.length;
+  umToque(jobs);
+  r.enviados = jobs.length ? await processar(jobs) : 0;
   if (r.erro_trovoada || r.erro_alertas) throw new Error([r.erro_trovoada, r.erro_alertas].filter(Boolean).join(' | '));
   return r;
 }
@@ -596,35 +680,34 @@ function cardRegiao(r: RegB, rotuloHora: string): string {
 // UM CARD POR REGIAO, cada um numa mensagem (decisao do usuario, 08/11).
 // Quem segue varias regioes recebe varios cards; so o primeiro da rodada toca,
 // os outros chegam sem som — senao "Todas" seriam 11 toques seguidos.
+// Em imagem (13/11): uma imagem por regiao, desenhada uma vez e mandada a
+// todos que seguem a regiao, em ordem; o resto da fila segue em ?acao=fila.
+function nivelPior(ms: MunB[], campo: "risco_hoje" | "risco_amanha"): string | null {
+  return ["alto", "elevado", "moderado", "normal"].find((k) => ms.some((m) => (m as any)[campo] === k)) ?? null;
+}
+function legendaRegiao(r: RegB, rotulo: string): string {
+  const ms = r.muns ?? [];
+  const p6 = pior(ms, (m) => m.chance6), mm = pior(ms, (m) => m.mm24), rk = nivelPior(ms, "risco_hoje");
+  return `<b>⛅ ${esc(r.regiao)} · boletim ${rotulo}</b>\n` +
+    `Próximas 6 h: ${p6?.chance6 != null ? nf(100 * p6.chance6) + "%" : "–"} de chance de chuva · 24 h: ~${nf(mm?.mm24 ?? 0)} mm` +
+    (rk ? `\nRisco de falta de energia hoje: ${RISCO[rk][1].toLowerCase()}` : "");
+}
 async function boletim(soChat?: number) {
-  const regs = ((await rpc("tempo_tg_boletim")) as RegB[])
-    .sort((a, b) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao));
-  const dest = (await rpc("tempo_tg_destinatarios")) as { chat_id: number; regioes: string[]; todas: boolean }[];
+  const regs = ((await rpc("tempo_tg_boletim")) as RegB[]).sort(ordemRegiao);
+  const dest = (await rpc("tempo_tg_destinatarios")) as Dest[];
   const agora = new Date(Date.now() - 3 * 3_600_000);
   const meiaNoite = agora.getUTCHours() < 3;                 // o das 00h sai todo sem som
   const rotuloHora = soChat ? hm(new Date().toISOString())   // pedido na hora: hora exata
     : String(Math.round(agora.getUTCHours() + agora.getUTCMinutes() / 60) % 24).padStart(2, "0") + "h";
-  let enviados = 0;
-  for (const d of dest) {
-    if (soChat && d.chat_id !== soChat) continue;
-    const meus = d.todas ? regs : regs.filter((r) => d.regioes.includes(r.regiao));
-    for (let i = 0; i < meus.length; i++) {
-      try {
-        await enviar(d.chat_id, cardRegiao(meus[i], rotuloHora),
-                     { disable_notification: (meiaNoite && !soChat) || i > 0 });
-        enviados++;
-        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "boletim", p_regiao: meus[i].regiao, p_ok: true, p_erro: null });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        await rpc("tempo_tg_log", { p_chat: d.chat_id, p_tipo: "boletim", p_regiao: meus[i].regiao, p_ok: false, p_erro: msg.slice(0, 300) });
-        if (/blocked|deactivated|chat not found/i.test(msg)) {
-          await rpc("tempo_tg_status", { p_chat: d.chat_id, p_status: "parado" });
-          break;
-        }
-      }
-    }
-  }
-  return { regioes: regs.length, enviados };
+  const quando = agoraTxt();
+  const jobs: Job[] = regs.map((r) => ({
+    tipo: "boletim", regiao: r.regiao, card: { k: "regiao" as const, r, rotulo: rotuloHora, quando },
+    legenda: legendaRegiao(r, rotuloHora), texto: cardRegiao(r, rotuloHora),
+    destinos: dest.filter((d) => (!soChat || d.chat_id === soChat) && segue(d, r.regiao))
+                  .map((d) => ({ chat: d.chat_id, silencioso: meiaNoite && !soChat })),
+  })).filter((j) => j.destinos.length);
+  umToque(jobs);
+  return { regioes: regs.length, cards: jobs.length, enviados: await processar(jobs) };
 }
 
 // ------------------------------------------------------------ /boletim de um municipio
@@ -724,8 +807,13 @@ function cardMunicipio(m: any): string {
 async function boletimMunicipio(chat: number, ibge: number) {
   const m = await rpc("tempo_tg_municipio", { p_ibge: ibge });
   if (!m) { await enviar(chat, "Não encontrei esse município."); return; }
-  await enviar(chat, cardMunicipio(m));
-  await rpc("tempo_tg_log", { p_chat: chat, p_tipo: "boletim_municipio", p_regiao: m.regiao, p_ok: true, p_erro: null });
+  const dias = ((await rpc("tempo_tg_dias", { p_ibge: ibge }).catch(() => [])) ?? []) as K.Dia[];
+  const rv = (n: string | null) => n && RISCO[n] ? RISCO[n][1].toLowerCase() : "sem cálculo";
+  const legenda = `<b>📍 ${esc(m.municipio)} · agora ${hm(new Date().toISOString())}</b>\n` +
+    `Próximas 6 h: ${m.chance6 != null ? nf(100 * m.chance6) + "%" : "–"} de chance de chuva · 24 h: ~${nf(m.mm24 ?? 0)} mm\n` +
+    `Risco de falta de energia: hoje ${rv(m.risco_hoje)}, amanhã ${rv(m.risco_amanha)}`;
+  await processar([{ tipo: "boletim_municipio", regiao: m.regiao, card: { k: "mun", m, dias, quando: agoraTxt() },
+                     legenda, texto: cardMunicipio(m), destinos: [{ chat, silencioso: false }] }]);
 }
 
 // "/boletim <nome>": acha o municipio pelo nome, sem acento e sem caixa.
@@ -805,7 +893,20 @@ Deno.serve(async (req: Request) => {
       const r = acao === "configurar" ? await configurar()
               : acao === "boletim"    ? await boletim()
               : acao === "teste"      ? await boletim(((await rpc("tempo_tg_admins")) as number[])[0])
-              : acao === "teste_alertas" ? await alertas(((await rpc("tempo_tg_admins")) as number[])[0])
+              : acao === "fila"       ? { enviados: await processar((((await req.json().catch(() => ({}))) as any).jobs ?? []) as Job[]) }
+              : acao === "teste_alertas" ? await (async () => {   // so para o administrador
+                  const adm = ((await rpc("tempo_tg_admins")) as number[])[0];
+                  const dest = ((await rpc("tempo_tg_destinatarios")) as Dest[]).filter((d) => d.chat_id === adm);
+                  const jobs = await jobsAlertas(dest, agoraTxt());
+                  return { cards: jobs.length, enviados: await processar(jobs) };
+                })()
+              : acao === "teste_cards" ? await (async () => {     // os 9 avisos de exemplo, so para o administrador
+                  const adm = ((await rpc("tempo_tg_admins")) as number[])[0];
+                  const jobs: Job[] = K.exemplos(agoraTxt()).map((e) => ({ tipo: "teste_card", regiao: e.nome,
+                    card: { k: "aviso" as const, a: e.aviso }, legenda: `<b>Exemplo · ${esc(e.nome)}</b>`, texto: e.nome,
+                    destinos: [{ chat: adm, silencioso: true }] }));
+                  return { enviados: await processar(jobs) };
+                })()
               : acao === "fixar"     ? await (async () => {   // fixa o painel para quem ja esta inscrito
                   const ds = (await rpc("tempo_tg_destinatarios")) as { chat_id: number }[];
                   for (const d of ds) await fixarPainel(d.chat_id).catch(() => {});
