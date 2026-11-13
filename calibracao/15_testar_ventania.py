@@ -84,22 +84,35 @@ CACHE = os.path.join(AQUI, "metar_rj.parquet")
 if os.path.exists(CACHE):
     met = pd.read_parquet(CACHE)
 else:
-    rows = []
-    for dia in dias:
-        ini = (pd.Timestamp(dia) + pd.Timedelta(hours=1)).strftime("%Y%m%d%H")
-        fim = (pd.Timestamp(dia) + pd.Timedelta(hours=28)).strftime("%Y%m%d%H")
-        url = "https://api-redemet.decea.mil.br/mensagens/metar/%s?data_ini=%s&data_fim=%s&page_tam=1000" % (",".join(AERO), ini, fim)
+    # A REDEMET devolve NO MAXIMO 150 mensagens por pedido e corta o resto em
+    # silencio: "total" vem 150, "last_page" 1, page=2 vem vazio e page_tam
+    # acima de 150 devolve nada (medido em 13/11). Entao a janela e partida ao
+    # meio ate cada pedido voltar com menos de 150.
+    def pedir(ini, fim):
+        url = "https://api-redemet.decea.mil.br/mensagens/metar/%s?data_ini=%s&data_fim=%s" % (
+            ",".join(AERO), ini.strftime("%Y%m%d%H"), fim.strftime("%Y%m%d%H"))
         for tent in range(4):
             try:
                 req = urllib.request.Request(url, headers={"X-Api-Key": CHAVE})
-                d = json.load(urllib.request.urlopen(req, timeout=90))
-                pag = d.get("data", {})
-                for m in pag.get("data", []):
-                    rows.append((m["id_localidade"] if "id_localidade" in m else m["mens"].split()[1 if not m["mens"].startswith(("METAR COR", "SPECI COR")) else 2],
-                                 m["validade_inicial"], m["mens"]))
-                break
-            except Exception as e:
+                return json.load(urllib.request.urlopen(req, timeout=90)).get("data", {}).get("data", [])
+            except Exception:
                 time.sleep(5 * (tent + 1))
+        print("  falhou:", ini, fim); return []
+
+    def janela(ini, fim, rows):
+        ms = pedir(ini, fim)
+        if len(ms) >= 150 and fim - ini > pd.Timedelta(hours=1):
+            meio = ini + pd.Timedelta(hours=((fim - ini) // pd.Timedelta(hours=1)) // 2)
+            janela(ini, meio, rows); janela(meio, fim, rows); return
+        for m in ms:
+            p = m["mens"].split()
+            rows.append((m.get("id_localidade") or p[2 if p[1] == "COR" else 1], m["validade_inicial"], m["mens"]))
+
+    rows = []
+    for n, dia in enumerate(dias):
+        janela(pd.Timestamp(dia) + pd.Timedelta(hours=1), pd.Timestamp(dia) + pd.Timedelta(hours=28), rows)
+        if n % 20 == 0:
+            print("  METAR: dia %d de %d, %d mensagens" % (n + 1, len(dias), len(rows)), flush=True)
     met = pd.DataFrame(rows, columns=["est", "t", "mens"]).drop_duplicates()
     met.to_parquet(CACHE, index=False)
 
