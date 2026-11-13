@@ -1346,6 +1346,40 @@ congelada.
 O painel declara isso em texto no cartão de impacto, em vez de exibir um número
 como se fosse aferido.
 
+### Primeira verificação de verdade (2026-11-13)
+
+**O atraso da ANEEL é de ~2 meses, não 1.** Setembro só saiu em **12/11**; a
+inferência de "por volta de 10/10" estava errada.
+
+**O robô (`aneel.yml`) não conseguiu buscar.** Em 11/11 e 13/11 o site da ANEEL
+derrubou a conexão vinda do GitHub (SSL EOF, depois timeout ×4 com as novas
+tentativas). Daqui de casa baixou na primeira. Parece bloqueio de faixa de IP de
+datacenter, não instabilidade. **Setembro foi carregado à mão** (passo 8 rodado
+localmente). Se o bloqueio persistir, outubro também vai precisar disso, por
+volta de meados de dezembro.
+
+**`impacto_pontuar()` nunca tinha rodado e estava quebrada** (corrigida na
+`sql/100`): DELETE/UPDATE sem WHERE, que o Supabase barra quando a chamada vem
+pela API, e `brier` ambíguo entre a coluna de saída e a da tabela.
+
+**Resultado — 663 pares, 20 dias (11 a 30/09), um mês seco:**
+
+| antecedência | pares | Brier | Brier clim. | skill |
+|---|---|---|---|---|
+| hoje | 663 | 0,0847 | 0,0848 | +0,1% |
+| D+1 | 629 | 0,0792 | 0,0798 | +0,7% |
+| D+2 | 596 | 0,0806 | 0,0796 | −1,2% |
+| D+3 | 565 | 0,0852 | 0,0836 | −2,0% |
+| D+4 | 524 | 0,0894 | 0,0894 | 0,0% |
+
+Taxa observada de dia ruim: ~9%. **Skill zero:** em setembro, a probabilidade de
+dia ruim não foi melhor que dizer sempre "9%". A climatologia de referência é a
+taxa do próprio período, o que a torna difícil de bater. Confiabilidade (hoje):
+abaixo de 8% previsto deu 4,8% observado (bom); 12–18% deu 16,4% (bom); mas
+18–28% deu só 11% e ≥28% deu 14% (só 7 pares). **As faixas altas superestimam.**
+Vinte dias secos não bastam para concluir nada; a leitura honesta é "ainda sem
+evidência de acerto", não "não funciona".
+
 ---
 
 ## 11. Ordem de construção

@@ -49,6 +49,11 @@ def buscar(url, dados=None, **cab):
         try:
             req = urllib.request.Request(url, data=dados, headers=cab)
             return urllib.request.urlopen(req, timeout=180)
+        except urllib.error.HTTPError as e:
+            # resposta do servidor (400, 401, 500...): nao e rede, repetir nao
+            # adianta. Mostra a mensagem — sem isso so se via "Bad Request".
+            print("  HTTP %s em %s: %s" % (e.code, url.split("?")[0][-60:], e.read().decode(errors="replace")[:500]))
+            raise
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if tentativa == 3:
                 raise
