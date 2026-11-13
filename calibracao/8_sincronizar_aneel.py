@@ -40,9 +40,20 @@ SEGREDO = os.environ.get("TEMPO_INGESTAO_SEGREDO", "")
 
 
 def buscar(url, dados=None, **cab):
+    # O site da ANEEL derruba conexao vinda do GitHub de vez em quando: 11/11
+    # (SSL EOF) e 13/11 (timeout), as duas na PRIMEIRA consulta — e no 13/11 o
+    # arquivo com setembro tinha acabado de sair. Sem nova tentativa, uma falha
+    # de rede adiava tudo para o dia seguinte. Agora: 4 tentativas, 30/60/90 s.
     cab.setdefault("User-Agent", UA)
-    req = urllib.request.Request(url, data=dados, headers=cab)
-    return urllib.request.urlopen(req, timeout=180)
+    for tentativa in range(4):
+        try:
+            req = urllib.request.Request(url, data=dados, headers=cab)
+            return urllib.request.urlopen(req, timeout=180)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if tentativa == 3:
+                raise
+            print("  rede falhou (%s), nova tentativa em %d s" % (str(e)[:80], 30 * (tentativa + 1)))
+            time.sleep(30 * (tentativa + 1))
 
 
 class ArquivoRemoto(io.RawIOBase):
