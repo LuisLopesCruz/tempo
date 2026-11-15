@@ -41,6 +41,18 @@ for ano in anos:
         d = t.to_pandas()
         d['dia'] = pd.to_datetime(d.DthInicioOcorrenciaAberta, errors='coerce').dt.date
     d = d.dropna(subset=['dia'])
+    # COBERTURA DA ANEEL. O tempo (ERA5) vai ate ~6 dias atras; a ANEEL, ate o
+    # ultimo mes publicado. Dia com tempo e sem ANEEL entraria como "zero
+    # chamados" — dia calmo falso, que puxa o modelo para baixo (em 11/09 eram
+    # 5 dias; com setembro e o tempo ate novembro seriam ~40). O fim vale pelo
+    # ultimo mes com volume normal (>= metade da mediana mensal): a data de
+    # inicio tem erros de digitacao que vao ate 2026-12 e nao servem de limite.
+    d['mes'] = pd.to_datetime(d.dia).dt.to_period('M')
+    por_mes = d.groupby('mes').size()
+    cheio = por_mes[por_mes >= 0.5 * por_mes.median()]
+    fim_aneel = cheio.index.max().to_timestamp(how='end').date()
+    d = d[d.dia <= fim_aneel]
+    print(f'{ano}: ANEEL cobre ate {fim_aneel}')
     alvo = d.groupby(['CodIBGE','dia']).size().reset_index(name='chamados')
     print(f'{ano}: {len(d):,} chamados no RJ, {len(alvo):,} municipio-dia')
 
@@ -65,6 +77,7 @@ for ano in anos:
         x['dia'] = pd.to_datetime(x.dia).dt.date
     j = (drv.merge(inten, on=['CodIBGE','dia'], how='left')
             .merge(alvo,  on=['CodIBGE','dia'], how='left'))
+    j = j[j.dia <= fim_aneel]                      # so dia que a ANEEL cobre
     j['chamados'] = j.chamados.fillna(0)
     j['ano'] = int(ano)
     partes.append(j)

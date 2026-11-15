@@ -24,3 +24,6 @@ Thumbs.db
 
 # Segredo em transito, para copiar para os paineis. Nunca versionar.
 SEGREDO-NOVO.txt
+
+# Reserva local dos insumos de uma calibracao anterior (dados, nao codigo)
+calibracao/_reserva*/
