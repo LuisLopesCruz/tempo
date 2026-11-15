@@ -446,7 +446,7 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
       <span class="rot">Trovoada</span>
       <b><i style="background:var(--ink-muted)"></i>Sem trovoada</b>
       <b><i style="background:var(--warning)"></i>Por perto</b>
-      <b><i style="background:var(--serious)"></i>A caminho</b>
+      <b><i style="background:var(--serious)"></i>Trovoada pr&oacute;xima</b>
       <b><i style="background:var(--critical)"></i>No munic&iacute;pio</b>
     </div>
     <div class="legal fim">
@@ -1269,7 +1269,10 @@ function linhaRisco(dc){
 // previsao. A regra (D15) roda no coletor; aqui so se le o estado. Sempre
 // mostra o estado vigente, como a Defesa Civil: "sem trovoada a 50 km" e
 // informacao para quem acabou de ouvir trovao.
-const TV_ROTULO = { nenhuma: "Sem trovoada", perto: "Por perto", a_caminho: "A caminho",
+// "a_caminho" aparece como "Trovoada proxima" (pedido do usuario, 15/11): desde
+// o D17 (13/11) a regra e "trovoada a 10-30 km", sem exigir aproximacao e sem
+// horario de chegada, e a linha mostra a chance APRENDIDA de chegar (sql/101).
+const TV_ROTULO = { nenhuma: "Sem trovoada", perto: "Por perto", a_caminho: "Trovoada próxima",
                     no_municipio: "No município", sem_dado: "Sem dado" };
 function linhaTrovoada(t){
   if (!t) return "";
@@ -1279,10 +1282,12 @@ function linhaTrovoada(t){
   if (t.situacao === "no_municipio"){
     qd = "célula de trovoada a até 10 km nos últimos 20 min";
   } else if (t.situacao === "a_caminho"){
-    const futura = t.chegada_em && new Date(t.chegada_em).getTime() > Date.now();
-    qd = (t.dist_km != null ? "a " + km(t.dist_km) : "a menos de 50 km") +
-         (t.velocidade_kmh ? ", aproximando-se a ~" + Math.round(t.velocidade_kmh) + " km/h" : "") +
-         (t.chegada_em ? (futura ? " · chegada estimada ~" + hm(t.chegada_em) : " · chegada iminente") : "");
+    const LADO = { norte: "ao norte", sul: "ao sul", leste: "a leste", oeste: "a oeste", nordeste: "a nordeste",
+                   noroeste: "a noroeste", sudeste: "a sudeste", sudoeste: "a sudoeste" };
+    qd = (t.dist_km != null ? "a " + km(t.dist_km) : "a até 30 km") +
+         (t.vem_de && LADO[t.vem_de] ? " " + LADO[t.vem_de] : "") +
+         (t.chance != null ? " · <b>" + Math.round(100 * t.chance) + "%</b> de chance de chegar" : "") +
+         " · pode chegar na próxima hora ou se desfazer antes";
   } else if (t.situacao === "perto"){
     qd = (t.dist_km != null && t.dist_km <= 50 ? "a " + km(t.dist_km) : "a até 50 km na última hora") +
          ", sem se aproximar";
@@ -1309,7 +1314,7 @@ function linhaTrovoada(t){
 let IBGE_TROVOADA = null;
 async function carregarTrovoada(ibge){
   const tv = await api("/tempo_trovoada?municipio_ibge=eq." + ibge +
-    "&select=situacao,dist_km,velocidade_kmh,chegada_em,quadro").catch(() => []);
+    "&select=situacao,dist_km,vem_de,chance,quadro").catch(() => []);
   if (ibge !== IBGE_TROVOADA) return "";           // trocou de municipio no meio
   const html = linhaTrovoada(tv[0]);
   $("#trovoada").innerHTML = html;
