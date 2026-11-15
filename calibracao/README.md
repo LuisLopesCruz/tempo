@@ -35,6 +35,14 @@ python 3_ajustar_v4.py              # imprime diagnóstico e escreve v4.sql
 
 Depois aplique `v4.sql` como migration e recarregue o painel.
 
+**Os arquivos ficam nesta máquina de propósito** (decisão do usuário, 15/11/2026:
+"para a próxima calibração ficar ainda mais rápida"). Os anos fechados (2023 a
+2025) não mudam e são reaproveitados. O ano em curso não: os scripts PULAM o
+que já existe, então antes de recalibrar mova para uma pasta de reserva
+`oc2026.parquet`, `era_2026_*` e `cape_2026_*`, senão a calibração roda com o
+arquivo velho da ANEEL e sem os meses novos de tempo. Foi o que se fez em 15/11
+(`_reserva_2026_set11/`).
+
 Precisa de `pandas` e `pyarrow` (`python -m pip install pyarrow`).
 
 ## O que conferir antes de aplicar
