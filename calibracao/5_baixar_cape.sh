@@ -28,6 +28,7 @@ for ANO in $ANOS; do
     if [ -s "$out" ] && [ "$(wc -c < "$out")" -gt 50000 ]; then
       echo "CAPE $ANO lote $lote: ja baixado"
     else
+      baixou=1   # so lote baixado de verdade espera pela cota
       la=""; lo=""; ib=""
       for ((j=i; j<i+K && j<N; j++)); do la="$la,${B[$j]}"; lo="$lo,${C[$j]}"; ib="$ib,${A[$j]}"; done
       echo "${ib:1}" > "cape_${ANO}_${lote}.ibge"
@@ -38,7 +39,7 @@ for ANO in $ANOS; do
         echo "CAPE $ANO lote $lote: HTTP$code — esperando 70s (tentativa $t)"; sleep 70
       done
     fi
-    sleep 40; i=$((i+K)); lote=$((lote+1))
+    [ "${baixou:-0}" = 1 ] && sleep 40; baixou=0; i=$((i+K)); lote=$((lote+1))
   done
 done
 echo "FIM"
