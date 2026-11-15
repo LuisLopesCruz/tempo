@@ -221,6 +221,9 @@ table.tab td:first-child{color:var(--ink)}
 .aviso b{color:var(--ink);font-weight:600}
 footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
   font-size:12px;color:var(--ink-muted);line-height:1.7}
+.aneel-aviso{margin:12px 0 0;padding:10px 12px;border-left:3px solid var(--warning);
+  background:color-mix(in srgb, var(--warning) 9%, transparent);color:var(--ink-2);border-radius:4px}
+.aneel-aviso.em-dia{border-left-color:var(--good);background:color-mix(in srgb, var(--good) 7%, transparent)}
 #tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity .1s;
   background:var(--surface);border:1px solid var(--ring);border-radius:8px;padding:9px 11px;
   font-size:12px;line-height:1.55;box-shadow:0 6px 22px rgba(0,0,0,.16);max-width:230px}
@@ -662,6 +665,7 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
     Interrup&ccedil;&otilde;es de energia em tempo real (consulta manual, painel da ANEEL):
     <a href="https://portalrelatorios.aneel.gov.br/hubDistribuicao/monitoramentoInterrupcoesFornecimentoBrasil" target="_blank" rel="noopener"
        style="color:var(--accent)">Monitoramento de Interrup&ccedil;&otilde;es</a>.
+    <p id="aneelAviso" class="aneel-aviso" hidden></p>
   </footer>
 </div>
 <div id="tip" role="tooltip"></div>
@@ -1830,6 +1834,43 @@ async function init(){
   carregarStatus();
   carregarSaude();
   carregarPanorama();
+  carregarAneel();
+}
+
+// ---------------------------------------------------------------- ANEEL no rodape
+// Pedido do usuario (15/11): avisar no rodape quando houver dados da ANEEL
+// publicados e ainda nao baixados / incorporados ao modelo. A carga e manual
+// desde 15/11 (o site da ANEEL bloqueia o robo do GitHub); o script grava em
+// tempo.aneel_arquivo ate que mes o arquivo publicado vai (sql/103).
+async function carregarAneel(){
+  const el = $("#aneelAviso");
+  try {
+    const a = (await api("/tempo_aneel_situacao?select=*"))[0];
+    if (!a) return;
+    const MES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+    const d = (s) => { const [y, m, dia] = s.split("-"); return dd(+dia) + "/" + dd(+m) + (y !== String(new Date().getFullYear()) ? "/" + y : ""); };
+    const mes = (s) => { const [y, m] = s.split("-"); return MES[+m - 1] + "/" + y; };
+    const dia1 = (s) => { const t = new Date(s + "T12:00:00Z"); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
+    const pend = [];
+    if (a.falta_baixar)
+      pend.push("ocorr&ecirc;ncias de " + d(dia1(a.observado_ate || a.previsto_de)) + " a " + d(a.arquivo_ate) +
+                " ainda n&atilde;o baixadas para conferir as previs&otilde;es de risco el&eacute;trico");
+    if (a.falta_calibrar)
+      pend.push("dados de " + d(dia1(a.calibrado_ate)) + " a " + d(a.arquivo_ate) +
+                " ainda n&atilde;o incorporados &agrave; calibra&ccedil;&atilde;o do modelo de impacto (calibrado at&eacute; " + d(a.calibrado_ate) + ")");
+    const base = "<b>Dados da ANEEL:</b> publicados at&eacute; <b>" + mes(a.arquivo_ate) + "</b>" +
+      (a.publicado_em ? " (arquivo de " + d(a.publicado_em) + ")" : "") +
+      "; previs&otilde;es de impacto conferidas at&eacute; " + (a.observado_ate ? d(a.observado_ate) : "&mdash;") +
+      (a.previsto_ate && a.observado_ate && a.previsto_ate > a.observado_ate
+        ? " &mdash; as de " + d(dia1(a.observado_ate)) + " a " + d(a.previsto_ate) + " aguardam a ANEEL publicar" : "") + ".";
+    el.innerHTML = pend.length
+      ? "&#9888;&#65039; <b>Existem dados dispon&iacute;veis n&atilde;o baixados e incorporados ao modelo:</b> " +
+        pend.join("; ") + ".<br>" + base +
+        " A carga &eacute; manual (o site da ANEEL bloqueia rob&ocirc;s); portal conferido em " + d(a.conferido_em.slice(0, 10)) + "."
+      : base + " Tudo o que a ANEEL publicou j&aacute; est&aacute; incorporado.";
+    el.classList.toggle("em-dia", !pend.length);
+    el.hidden = false;
+  } catch (e) { el.hidden = true; }
 }
 
 $("#maisAlertas").addEventListener("click", function (){

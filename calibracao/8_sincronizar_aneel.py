@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
-"""PASSO 8 — sincroniza o observado da ANEEL. Roda sozinho, todo dia.
+"""PASSO 8 — sincroniza o observado da ANEEL. Roda A MAO, daqui.
 
-Chamado por .github/workflows/aneel.yml. Nao e para rodar a mao, embora rode:
-basta exportar TEMPO_ANON_KEY e TEMPO_INGESTAO_SEGREDO.
+Uso:  TEMPO_ANON_KEY=... TEMPO_INGESTAO_SEGREDO=... python 8_sincronizar_aneel.py
+
+Era um robo diario no GitHub (.github/workflows/aneel.yml). Apagado em 15/11/2026
+a pedido do usuario ("se nao funciona, melhor apagar"): desde 11/11 o site da
+ANEEL derruba toda conexao vinda das maquinas do GitHub, e daqui baixa na hora.
+Cada execucao grava em tempo.aneel_arquivo ate que mes o arquivo publicado vai
+(sql/103); o rodape do painel avisa quando ha dado publicado e nao incorporado.
+A ANEEL publica com ~2 meses de atraso (setembro saiu em 12/11).
 
 A IDEIA
   O parquet da ANEEL tem ~195 MB e so muda uma vez por mes. Baixar todo dia
@@ -103,6 +109,18 @@ def enviar(linhas):
     return r.read().decode()[:300]
 
 
+def registrar_arquivo(ano, mes, publicado):
+    """Grava no banco ate que mes o arquivo da ANEEL vai: alimenta o aviso do rodape."""
+    import calendar
+    fim = "%d-%02d-%02d" % (ano, mes, calendar.monthrange(ano, mes)[1])
+    corpo = json.dumps({"p_segredo": SEGREDO, "p_arquivo_ate": fim,
+                        "p_publicado_em": (publicado or "")[:10] or None}).encode()
+    buscar(SUPA + "/rest/v1/rpc/tempo_aneel_arquivo", dados=corpo,
+           apikey=ANON, Authorization="Bearer " + ANON,
+           **{"Content-Type": "application/json"}).read()
+    print("registrado no banco: ANEEL publicou ate %s" % fim)
+
+
 def estado_do_banco():
     r = buscar(SUPA + "/rest/v1/tempo_aneel_estado?select=*",
                apikey=ANON, Authorization="Bearer " + ANON)
@@ -160,6 +178,8 @@ def main():
     mes = maior_mes(md, nomes)
     print("parquet %s publicado em %s, cobre ate o mes %s (rodape: %.0f KB)"
           % (ano_alvo, alvo["last_modified"][:10], mes, f.baixado / 1024))
+    if mes:
+        registrar_arquivo(ano_alvo, mes, alvo.get("last_modified"))
 
     if mes is None or mes < mes_alvo:
         print("ainda nao alcanca o mes %d. Nada a ingerir — custou %.0f KB."
