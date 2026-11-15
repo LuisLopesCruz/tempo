@@ -41,16 +41,21 @@ Precisa de `pandas` e `pyarrow` (`python -m pip install pyarrow`).
 
 O passo 3 imprime tudo isto. Se algum item destoar, **não aplique** — investigue.
 
-| Item | Referência (4 anos, 2026-09-11) |
+| Item | Referência (2023 a set/2026, recalibração de 2026-11-15) |
 |---|---|
-| `b` monotônico nas duas tabelas | faixa maior ⇒ `b` maior |
-| viés | −0,23 |
-| MAE | 9,03 (só base: 9,34) |
-| municípios que atingem o próprio p95 | 28 de 92 |
-| teto médio | 85% do p95 |
-| curva de probabilidade | monotônica, terminando em ~32,5% |
-| município-dia | 123.648 |
-| dias na faixa ≥70 km/h | 177 |
+| `b` monotônico nas três tabelas | faixa maior ⇒ `b` maior (exceção conhecida: CAPE 200–500 ≈ −0,005, ruído) |
+| viés | +0,04 |
+| MAE | 8,69 (só base: 9,09) |
+| municípios que atingem o próprio p95 | 38 de 92 |
+| teto médio | 94% do p95 |
+| curva de probabilidade | monotônica, terminando em ~31,4% |
+| `limiar_dia_ruim` (p90) | 2,18 — atualizar `tempo.impacto_param` junto, o `v4.sql` não faz isso |
+| município-dia | 125.948 |
+| dias na faixa ≥70 km/h | 178 |
+
+Ao terminar, marque `tempo.aneel_arquivo.calibrado_ate` com o último dia
+calibrado: é o que o rodapé do painel usa para dizer se há dado da ANEEL fora
+do modelo.
 
 ## Duas armadilhas que já custaram tempo
 
