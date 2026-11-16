@@ -225,7 +225,7 @@ const AJUDA =
   "<b>TEMPO-RJ</b> · avisos de tempo para o estado do Rio\n\n" +
   "/boletim — boletim agora: de um município ou das suas regiões\n" +
   "/boletim Petrópolis — direto para um município\n" +
-  "/ouvi São Pedro da Aldeia — ouviu trovoada? Conte onde: o relato ensina o aviso\n" +
+  "/evento — informar o que está acontecendo agora (trovoada, chuva forte, vento, granizo, alagamento, falta de luz): ajuda a calibrar os avisos\n" +
   "/regioes — escolher as regiões que você acompanha\n" +
   "/parar — parar de receber avisos\n" +
   "/start — voltar a receber\n" +
@@ -288,20 +288,9 @@ async function conversa(upd: any) {
     const termo = texto.replace(/^\/boletim(@\w+)?/i, "").trim();
     if (termo) await buscarMunicipio(chat, termo);
     else await enviar(chat, "Boletim de quê?", { reply_markup: MENU_BOLETIM });
-  } else if (cmd === "/ouvi") {
-    // "/ouvi Sao Pedro da Aldeia" registra direto; "/ouvi" sozinho pergunta onde
-    const termo = texto.replace(/^\/ouvi(@\w+)?/i, "").trim();
-    if (!termo) {
-      await enviar(chat, "🔊 Onde você ouviu trovoada? Escolha a <b>região</b>:", { reply_markup: tecladoRegioesMun("o") });
-      return;
-    }
-    const achados = acharMunicipios((await rpc("tempo_tg_municipios")) as MunInfo[], termo);
-    if (achados.length === 1) await relatar(chat, achados[0].ibge, u);
-    else if (achados.length > 1 && achados.length <= 12) {
-      await enviar(chat, `Encontrei ${achados.length} municípios. Onde foi?`, { reply_markup: tecladoMunicipios(achados, "o") });
-    } else {
-      await enviar(chat, `Não encontrei "${esc(termo)}". Escolha a região:`, { reply_markup: tecladoRegioesMun("o") });
-    }
+  } else if (cmd === "/evento" || cmd === "/ouvi") {
+    // "Informar evento" (16/11). O antigo /ouvi abre o mesmo fluxo com Trovoada marcada.
+    await enviar(chat, TXT_EVENTOS, { reply_markup: tecladoEventos(cmd === "/ouvi" ? 1 : 0) });
   } else if (cmd === "/parar") {
     await rpc("tempo_tg_status", { p_chat: chat, p_status: "parado" });
     await enviar(chat, "Pronto, você não recebe mais avisos. Para voltar, mande /start.");
@@ -318,7 +307,7 @@ async function botao(q: any) {
   if (!u || u.status !== "ativo") { await resp("Acesso não liberado."); return; }
 
   if (d.startsWith("b:")) return botaoBoletim(q, chat, d, u);
-  if (d.startsWith("o:")) return botaoOuvi(q, chat, d, u);
+  if (d.startsWith("e:")) return botaoEvento(q, chat, d, u);
 
   if (d.startsWith("ap:") || d.startsWith("rc:")) {
     if (!u.admin) { await resp("Só o administrador aprova."); return; }
@@ -745,7 +734,7 @@ async function boletim(soChat?: number) {
 type MunInfo = { ibge: number; nome: string; regiao: string };
 const semAcento = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 
-// prefixo "b" = /boletim, "o" = /ouvi (mesma escolha regiao -> municipio)
+// teclados de escolha regiao -> municipio do /boletim
 function tecladoRegioesMun(p = "b") {
   const linhas: { text: string; callback_data: string }[][] = [];
   for (let i = 0; i < REGIOES.length; i += 2) {
@@ -887,68 +876,150 @@ async function botaoBoletim(q: any, chat: number, d: string, u: any) {
   }
 }
 
-// ------------------------------------------------------------ /ouvi: relato de trovoada
-// Pedido do usuario (16/11): ouviu trovoada em Sao Pedro da Aldeia sem aviso.
-// O relato vira verdade de campo (tempo.trovoada_relato) junto com o que o
-// sistema via na hora; a resposta mostra isso, para a pessoa entender por que
-// houve ou nao houve aviso.
-async function relatar(chat: number, ibge: number, u: any) {
-  const r = await rpc("tempo_tg_relatar", { p_chat: chat, p_ibge: ibge });
-  if (!r) { await enviar(chat, "Não encontrei esse município."); return; }
-  if (r.repetido) {
-    await enviar(chat, `Já registrei trovoada em <b>${esc(r.municipio)}</b> há menos de 20 min. Obrigado!`);
-    return;
+// ------------------------------------------------------------ /evento: "Informar evento"
+// Pedido do usuario (16/11): a pessoa informa o que esta acontecendo agora.
+// Tres telas na MESMA mensagem (editada a cada toque): (1) o que, podendo marcar
+// varios eventos; (2) a regiao; (3) a regiao toda ou um ou mais municipios.
+// O banco (tempo_tg_evento, sql/109) le cada evento x municipio: se o bot tinha
+// avisado (aviso que chegou ao celular) e CONFIRMACAO; se nao, ANALISE, com o
+// que o sistema via. As marcacoes viajam no proprio botao (mascaras de bits),
+// sem estado guardado: callback_data do Telegram tem no maximo 64 bytes.
+//   e:t:<ev>:<i>           liga/desliga o evento i
+//   e:ok:<ev>              eventos escolhidos -> regioes
+//   e:v:<ev>               volta para os eventos
+//   e:r:<ev>:<ri>          regiao ri -> municipios
+//   e:m:<ev>:<ri>:<mm>:<i> liga/desliga o municipio i da regiao
+//   e:all:<ev>:<ri>        registra a regiao toda
+//   e:f:<ev>:<ri>:<mm>     registra os municipios marcados
+const EVENTOS: [string, string, string][] = [
+  ["trovoada", "⚡", "Trovoada"], ["chuva", "🌧️", "Chuva forte"], ["vento", "💨", "Vento forte"],
+  ["granizo", "🧊", "Granizo"], ["alagamento", "🌊", "Alagamento"], ["falta_luz", "🔌", "Falta de luz"]];
+const TXT_EVENTOS = "📣 <b>Informar evento</b>\nO que está acontecendo agora? Marque um ou mais e toque em <b>Continuar</b>.\n" +
+  "<i>Seu relato ajuda o TEMPO-RJ a calibrar os avisos.</i>";
+const bits = (mask: number, n: number) => Array.from({ length: n }, (_, i) => i).filter((i) => mask & (1 << i));
+const nomesEventos = (ev: number) => bits(ev, EVENTOS.length).map((i) => `${EVENTOS[i][1]} ${EVENTOS[i][2]}`).join(", ");
+
+function tecladoEventos(ev: number) {
+  const linhas: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < EVENTOS.length; i += 2) {
+    linhas.push([i, i + 1].map((k) => ({ text: `${ev & (1 << k) ? "✅" : "▫️"} ${EVENTOS[k][1]} ${EVENTOS[k][2]}`,
+                                          callback_data: `e:t:${ev}:${k}` })));
   }
-  const agora = hm(new Date().toISOString());
-  const L = [`✅ <b>Registrado</b>: trovoada ouvida em <b>${esc(r.municipio)}</b> às ${agora}.`, "", "<b>O que o TEMPO-RJ via</b>"];
-  const km = r.menor_30min_km != null ? Math.round(r.menor_30min_km) : null;
-  if (r.sem_dado) {
-    L.push(`Nada: a REDEMET está sem dados desde ${hm(r.quadro)}. O relato fica como trovoada que o sistema não tinha como ver.`);
-  } else if (km == null) {
-    L.push(`Nenhuma célula de trovoada no RJ nos últimos 30 min (leitura das ${hm(r.quadro)}). ` +
-           "O relato fica como trovoada que a REDEMET não detectou.");
-  } else {
-    L.push(`Célula mais próxima a ~${km} km` + (r.vem_de ? ` ${LADO[r.vem_de] ?? ""}` : "") + ` (leitura das ${hm(r.quadro)}).`);
-    if (r.situacao === "no_municipio") L.push("Já constava como trovoada sobre o município.");
-    else if (r.situacao === "a_caminho" && r.chance != null && r.limiar != null && r.chance < r.limiar) {
-      L.push(`Chance aprendida de chegar à cidade: ${pct(r.chance)}, abaixo do corte de ${pct(r.limiar)} — ` +
-             "por isso o município não saiu como \"Trovoada próxima\".");
-    } else if (r.situacao === "a_caminho") L.push(`Constava como "Trovoada próxima" (${pct(r.chance)} de chance de chegar).`);
-    else L.push("Fora da faixa de aviso (até 30 km do município).");
+  linhas.push([{ text: "Continuar ▶", callback_data: `e:ok:${ev}` }]);
+  return { inline_keyboard: linhas };
+}
+function tecladoRegioesEv(ev: number) {
+  const linhas: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < REGIOES.length; i += 2) {
+    linhas.push(REGIOES.slice(i, i + 2).map((r, k) => ({ text: r, callback_data: `e:r:${ev}:${i + k}` })));
   }
-  L.push("", "<i>Cada relato guarda a distância em que a trovoada foi ouvida. Com relatos suficientes, " +
-            "o corte do aviso pode ser ajustado para trovoada que se ouve, não só a que chega.</i>");
-  await enviar(chat, L.join("\n"));
-  if (!u?.admin) {   // o administrador fica sabendo dos relatos dos outros
-    for (const adm of (await rpc("tempo_tg_admins")) as number[]) {
-      await enviar(adm, `🔊 <b>${esc(u?.nome ?? String(chat))}</b> ouviu trovoada em <b>${esc(r.municipio)}</b> às ${agora}` +
-                        (km != null && !r.sem_dado ? ` (célula mais próxima a ~${km} km)` : ""), { disable_notification: true }).catch(() => {});
+  linhas.push([{ text: "← Eventos", callback_data: `e:v:${ev}` }]);
+  return { inline_keyboard: linhas };
+}
+function tecladoMunicipiosEv(ev: number, ri: number, muns: MunInfo[], mm: number) {
+  const linhas: { text: string; callback_data: string }[][] = [[{ text: "🗺️ Região toda", callback_data: `e:all:${ev}:${ri}` }]];
+  for (let i = 0; i < muns.length; i += 2) {
+    linhas.push(muns.slice(i, i + 2).map((m, k) => ({ text: `${mm & (1 << (i + k)) ? "✅" : "▫️"} ${m.nome}`,
+                                                      callback_data: `e:m:${ev}:${ri}:${mm}:${i + k}` })));
+  }
+  linhas.push([{ text: "← Regiões", callback_data: `e:ok:${ev}` }, { text: "Confirmar ✔", callback_data: `e:f:${ev}:${ri}:${mm}` }]);
+  return { inline_keyboard: linhas };
+}
+// municipios da regiao em ordem fixa (alfabetica): o indice do bit depende disso
+async function munsDaRegiao(ri: number): Promise<MunInfo[]> {
+  const reg = REGIOES[ri];
+  return ((await rpc("tempo_tg_municipios")) as MunInfo[]).filter((m) => m.regiao === reg)
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+}
+
+async function botaoEvento(q: any, chat: number, d: string, u: any) {
+  const resp = (texto?: string) => tg("answerCallbackQuery", { callback_query_id: q.id, text: texto });
+  const msgId = q.message.message_id;
+  const edita = (texto: string, kb: unknown) =>
+    tg("editMessageText", { chat_id: chat, message_id: msgId, parse_mode: "HTML", text: texto, reply_markup: kb });
+  const p = d.split(":");
+  const ev = Number(p[2] ?? 0);
+  if (p[1] === "t") {
+    await resp();
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: msgId, reply_markup: tecladoEventos(ev ^ (1 << Number(p[3]))) });
+  } else if (p[1] === "v") {
+    await resp();
+    await edita(TXT_EVENTOS, tecladoEventos(ev));
+  } else if (p[1] === "ok") {
+    if (!ev) { await resp("Marque pelo menos um evento."); return; }
+    await resp();
+    await edita(`📣 <b>Informar evento</b> · ${nomesEventos(ev)}\nEm qual <b>região</b>?`, tecladoRegioesEv(ev));
+  } else if (p[1] === "r" || p[1] === "m") {
+    const ri = Number(p[3]);
+    const muns = await munsDaRegiao(ri);
+    const mm = p[1] === "m" ? Number(p[4]) ^ (1 << Number(p[5])) : 0;
+    await resp();
+    if (p[1] === "m") {
+      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: msgId, reply_markup: tecladoMunicipiosEv(ev, ri, muns, mm) });
+    } else {
+      await edita(`📣 <b>Informar evento</b> · ${nomesEventos(ev)}\n<b>${esc(REGIOES[ri] ?? "")}</b>: a região toda, ou marque os municípios e toque em <b>Confirmar</b>.`,
+                  tecladoMunicipiosEv(ev, ri, muns, 0));
     }
+  } else if (p[1] === "all" || p[1] === "f") {
+    const ri = Number(p[3]);
+    const muns = await munsDaRegiao(ri);
+    const toda = p[1] === "all";
+    const escolhidos = toda ? muns : bits(Number(p[4]), muns.length).map((i) => muns[i]);
+    if (!escolhidos.length) { await resp("Marque um município ou toque em Região toda."); return; }
+    await resp("Registrando…");
+    await edita(`📣 <b>Informar evento</b> · ${nomesEventos(ev)}\nRegistrando…`, { inline_keyboard: [] });
+    await registrarEvento(chat, msgId, ev, REGIOES[ri], escolhidos, toda, u);
+  } else {
+    await resp();
   }
 }
 
-// Botoes do /ouvi (callback_data "o:...")
-async function botaoOuvi(q: any, chat: number, d: string, u: any) {
-  const resp = (texto?: string) => tg("answerCallbackQuery", { callback_query_id: q.id, text: texto });
-  const msgId = q.message.message_id;
-  if (d === "o:mun") {
-    await resp();
-    await tg("editMessageText", { chat_id: chat, message_id: msgId, parse_mode: "HTML",
-      text: "🔊 Onde você ouviu trovoada? Escolha a <b>região</b>:", reply_markup: tecladoRegioesMun("o") });
-  } else if (d.startsWith("o:r:")) {
-    const reg = REGIOES[Number(d.slice(4))];
-    const todos = (await rpc("tempo_tg_municipios")) as MunInfo[];
-    await resp();
-    await tg("editMessageText", { chat_id: chat, message_id: msgId, parse_mode: "HTML",
-      text: `🔊 <b>${esc(reg ?? "")}</b> — em qual município?`,
-      reply_markup: tecladoMunicipios(todos.filter((m) => m.regiao === reg), "o") });
-  } else if (d.startsWith("o:m:")) {
-    await resp("Registrando…");
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: msgId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
-    await relatar(chat, Number(d.slice(4)), u);
-  } else {
-    await resp();
+type LinhaEv = { evento: string; municipio: string; avisou?: boolean; como?: string; nota?: string; repetido?: boolean };
+async function registrarEvento(chat: number, msgId: number, ev: number, regiao: string, muns: MunInfo[], toda: boolean, u: any) {
+  const evs = bits(ev, EVENTOS.length).map((i) => EVENTOS[i][0]);
+  const r = ((await rpc("tempo_tg_evento", { p_chat: chat, p_eventos: evs, p_ibges: muns.map((m) => m.ibge),
+                                                p_regiao_toda: toda })) ?? []) as LinhaEv[];
+  const agora = hm(new Date().toISOString());
+  const onde = toda ? `${regiao} (região toda)` : muns.map((m) => m.nome).join(", ");
+  const L = [`✅ <b>Evento registrado</b> · ${esc(onde)} · ${agora}`,
+             "Obrigado! Cada relato ajuda o TEMPO-RJ a calibrar os avisos.", ""];
+  const analise: LinhaEv[] = [];
+  for (const [chave, emoji, nome] of EVENTOS.filter((e) => evs.includes(e[0]))) {
+    const rs = r.filter((x) => x.evento === chave && !x.repetido);
+    const rep = r.filter((x) => x.evento === chave && x.repetido).length;
+    L.push(`${emoji} <b>${nome}</b>`);
+    const sim = rs.filter((x) => x.avisou), nao = rs.filter((x) => !x.avisou);
+    analise.push(...nao);
+    if (rs.length > 4) {   // regiao toda: resumo, sem uma linha por municipio
+      if (sim.length) L.push(`• Com aviso do bot (confirmação): ${esc(sim.map((x) => x.municipio).join(", "))}`);
+      if (nao.length) L.push(`• Sem aviso (vai para análise): ${nao.length} município${nao.length > 1 ? "s" : ""}`);
+    } else {
+      for (const x of sim) L.push(`• ${esc(x.municipio)}: o bot tinha avisado (${esc(x.como ?? "")}). Entra como <b>confirmação</b>.`);
+      for (const x of nao) L.push(`• ${esc(x.municipio)}: sem aviso do bot, vai para <b>análise</b>. ${esc(cap(x.nota ?? ""))}.`);
+    }
+    if (rep) L.push(`• ${rep} já registrado${rep > 1 ? "s" : ""} há menos de 20 min (não conta de novo).`);
+    L.push("");
   }
+  await edita2(chat, msgId, L.join("\n").trim());
+  // o administrador recebe na hora o que foi para analise (e, sem som, o resto)
+  if (!u?.admin) {
+    const quem = esc(u?.nome ?? String(chat));
+    const txt = analise.length
+      ? `🔎 <b>Para análise</b> · ${quem} informou às ${agora}, sem aviso do bot:\n` +
+        analise.slice(0, 8).map((x) => `• ${esc(nomeEvento(x.evento))} em ${esc(x.municipio)}: ${esc(x.nota ?? "")}`).join("\n") +
+        (analise.length > 8 ? `\n• e mais ${analise.length - 8}` : "")
+      : `📣 ${quem} informou ${esc(nomesEventos(ev))} em ${esc(onde)} às ${agora}: o bot tinha avisado (confirmação).`;
+    for (const adm of (await rpc("tempo_tg_admins")) as number[]) {
+      await enviar(adm, txt, { disable_notification: !analise.length }).catch(() => {});
+    }
+  }
+}
+const cap = (s: string) => s ? s[0].toUpperCase() + s.slice(1) : s;
+const nomeEvento = (k: string) => { const e = EVENTOS.find((x) => x[0] === k); return e ? `${e[1]} ${e[2]}` : k; };
+// a resposta substitui a propria mensagem dos botoes; se falhar, vai como mensagem nova
+async function edita2(chat: number, msgId: number, texto: string) {
+  try { await tg("editMessageText", { chat_id: chat, message_id: msgId, parse_mode: "HTML", text: texto }); }
+  catch (_) { await enviar(chat, texto); }
 }
 
 // ------------------------------------------------------------ configurar (1 vez)
@@ -960,7 +1031,7 @@ async function configurar() {
                            drop_pending_updates: false });   // o /start que ja esta na fila vale
   await tg("setMyCommands", { commands: [
     { command: "boletim", description: "Boletim agora: um município ou suas regiões" },
-    { command: "ouvi", description: "Ouviu trovoada? Conte onde: ensina o aviso" },
+    { command: "evento", description: "Informar evento: trovoada, chuva, vento, falta de luz…" },
     { command: "regioes", description: "Escolher as regiões que você acompanha" },
     { command: "parar", description: "Parar de receber avisos" },
     { command: "start", description: "Voltar a receber avisos" },
