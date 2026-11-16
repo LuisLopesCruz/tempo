@@ -90,13 +90,20 @@ function icone(nome: string, cor: string, fundo: string, tam: number): No {
 }
 
 // ------------------------------------------------------------------ pecas comuns
-function cabecalho(o: { cor: string; claro?: boolean; icone: string; kicker: string; titulo: string; sub?: string }): Peca {
+function cabecalho(o: { cor: string; claro?: boolean; icone: string; kicker: string; titulo: string; sub?: string; tag?: string }): Peca {
   const tc = o.claro ? C.ink : "#ffffff";
   const wTxt = CW - 120 - 32;
+  // tag (16/11, pedido do usuario): "ATUALIZACAO" em etiqueta branca, para a
+  // nova mensagem de uma regiao ja avisada nao parecer aviso repetido
+  const tg: Peca | null = o.tag
+    ? [div({ width: wTxt }, div({ fontSize: 24, fontWeight: 800, color: o.claro ? "#ffffff" : o.cor,
+                                  backgroundColor: o.claro ? C.ink : "#ffffff", borderRadius: 10,
+                                  padding: "6px 14px", letterSpacing: 1.5 }, o.tag.toUpperCase())), 44]
+    : null;
   const k = texto(o.kicker, { fs: 26, w: wTxt, peso: 600, cor: tc, ls: 1.5, caixa: true, extra: { opacity: 0.88 } });
   const t = texto(o.titulo, { fs: 58, w: wTxt, peso: 800, cor: tc, lh: 1.08 });
   const s = o.sub ? texto(o.sub, { fs: 30, w: wTxt, peso: 400, cor: tc, extra: { opacity: 0.92 } }) : null;
-  const col = coluna([k, t, ...(s ? [s] : [])], 10);
+  const col = coluna([...(tg ? [tg] : []), k, t, ...(s ? [s] : [])], 10);
   const h = Math.max(120, col[1]) + 2 * 46;
   return [div({ backgroundColor: o.cor, padding: `46px ${PAD}px`, alignItems: "center", gap: 32, width: W },
               div({ width: 120, height: 120, borderRadius: 60, backgroundColor: o.claro ? C.ink : "#ffffff",
@@ -181,6 +188,7 @@ export type Aviso = {
   escala?: { niveis: [string, string][]; atual: number; titulo: string };
   secoes: [string, string][]; fazer?: string; origem: string; quando: string; teste?: boolean;
   resumo?: string;            // texto curto para a legenda da foto
+  tag?: string;               // etiqueta no topo ("Atualização · aviso das 14h37")
 };
 export function cardAviso(a: Aviso) {
   const corpo: Peca[] = [];
@@ -477,7 +485,14 @@ const pctTxt = (c: number | null | undefined) => c != null ? `${Math.round(100 *
 type MunT = { nome: string; situacao: string; dist_km: number | null; vem_de?: string | null; chance?: number | null;
   celulas_50km?: number | null };
 export type ItemTrovoada = { regiao: string; tipo: string; municipios: MunT[]; quadro: string;
-  desempenho?: { verificados: number; acertos: number } };
+  desempenho?: { verificados: number; acertos: number };
+  atualizacao?: boolean; anterior?: string | null; novos?: string[] };
+
+// Mensagem de uma regiao que ja estava avisada: etiqueta "Atualização" com a
+// hora do aviso anterior, e "NOVO" em cada municipio que entrou agora.
+const tagAtualizacao = (it: ItemTrovoada) =>
+  it.atualizacao ? `Atualização${it.anterior ? " · aviso das " + hhmm(it.anterior) : ""}` : undefined;
+const ehNovo = (it: ItemTrovoada, nome: string) => !!it.atualizacao && (it.novos ?? []).includes(nome);
 
 function notaAprendizado(d?: { verificados: number; acertos: number }) {
   return d && d.verificados >= 20
@@ -491,9 +506,11 @@ export function avisoTrovoada(it: ItemTrovoada, quando: string): Aviso {
   const no = muns.filter((m) => m.situacao === "no_municipio");
   const cam = muns.filter((m) => m.situacao === "a_caminho");
   const kicker = `Aviso imediato · ${it.regiao}`;
+  const tag = tagAtualizacao(it);
+  const novo = (m: MunT) => ehNovo(it, m.nome) ? "NOVO · " : "";
   const prox = (m: MunT) => ({
     nome: m.nome,
-    detalhe: `trovoada a ~${Math.round(m.dist_km ?? 0)} km${m.vem_de ? " " + (LADO[m.vem_de] ?? "") : ""} · ${porte(m.celulas_50km)}`,
+    detalhe: `${novo(m)}trovoada a ~${Math.round(m.dist_km ?? 0)} km${m.vem_de ? " " + (LADO[m.vem_de] ?? "") : ""} · ${porte(m.celulas_50km)}`,
     valor: m.chance != null ? pctTxt(m.chance) : undefined, rotulo: m.chance != null ? "de chance de chegar" : undefined });
   if (it.tipo === "afastou") {
     return { cor: C.verde, icone: "check", kicker, titulo: "Trovoada se afastou", quando,
@@ -502,34 +519,28 @@ export function avisoTrovoada(it: ItemTrovoada, quando: string): Aviso {
       resumo: `${it.regiao}: sem descargas a até 50 km na última hora.` } as Aviso;
   }
   if (it.tipo === "no_municipio") {
-    return { cor: C.critical, icone: "raio", kicker, titulo: "Trovoada sobre a cidade", quando, corDestaque: C.laranja,
-      destaque: [...no.map((m) => ({ nome: m.nome, detalhe: `descargas a até 10 km · ${porte(m.celulas_50km)}` })),
+    return { cor: C.critical, icone: "raio", kicker, tag, titulo: "Trovoada sobre a cidade", quando, corDestaque: C.laranja,
+      destaque: [...no.map((m) => ({ nome: m.nome, detalhe: `${novo(m)}descargas a até 10 km · ${porte(m.celulas_50km)}` })),
                  ...cam.map((m) => ({ ...prox(m), detalhe: "próxima também: " + prox(m).detalhe }))],
-      secoes: [["O que esperar", "Raios, chuva forte e rajadas nos próximos 30 a 60 minutos."]],
-      fazer: "Fique em local fechado e tire aparelhos sensíveis da tomada.",
+      secoes: [["O que esperar", "Raios, chuva forte e rajadas nos próximos 30 a 60 minutos."],
+               ["Risco de falta de energia agora", ENERGIA]],
+      fazer: "Fique em local fechado, carregue celulares e lanternas e tire aparelhos sensíveis da tomada.",
       origem: `${ORIG_REDEMET} a até 10 km do município nos últimos 20 min. Leitura das ${hhmm(it.quadro)}.`,
-      resumo: `Descargas a até 10 km de ${juntar(no.map((m) => m.nome))}.` } as Aviso;
+      resumo: `Descargas a até 10 km de ${juntar(no.map((m) => m.nome))}. 🔌 Risco de falta de energia.` } as Aviso;
   }
-  return { cor: C.laranja, icone: "raio", kicker, titulo: "Trovoada próxima", quando, destaque: cam.map(prox),
+  return { cor: C.laranja, icone: "raio", kicker, tag, titulo: "Trovoada próxima", quando, destaque: cam.map(prox),
     secoes: [["Quando", "Pode chegar na próxima hora — ou se desfazer antes. Trovoada de verão costuma nascer e morrer no mesmo lugar."],
-             ["O que esperar", "Se chegar: raios, chuva forte por pouco tempo e rajadas de vento. Pode faltar energia."]],
-    fazer: "Recolha o que estiver solto, evite áreas abertas e carregue o celular.",
+             ["O que esperar", "Se chegar: raios, chuva forte por pouco tempo e rajadas de vento."],
+             ["Risco de falta de energia agora", ENERGIA]],
+    fazer: "Recolha o que estiver solto, evite áreas abertas, carregue celulares e lanternas e tire aparelhos sensíveis da tomada.",
     origem: `${ORIG_REDEMET} a 10–30 km do município nos últimos 20 min, leitura das ${hhmm(it.quadro)}.` + notaAprendizado(it.desempenho),
-    resumo: cam.map((m) => `${m.nome}${m.chance != null ? " " + pctTxt(m.chance) : ""}`).join(" · ") } as Aviso;
+    resumo: cam.map((m) => `${m.nome}${m.chance != null ? " " + pctTxt(m.chance) : ""}`).join(" · ") + " · 🔌 risco de falta de energia" } as Aviso;
 }
 
-export function avisoRiscoTrovoada(it: ItemTrovoada, quando: string): Aviso {
-  const muns = (it.municipios ?? []).filter((m) => m.situacao === "a_caminho" || m.situacao === "no_municipio");
-  const sobre = it.tipo === "no_municipio";
-  return { cor: sobre ? C.critical : C.laranja, icone: "tomada", kicker: `Aviso imediato · ${it.regiao}`,
-    titulo: "Risco de falta de energia agora", quando, destaque: [{ nome: juntar(muns.map((m) => m.nome)) }],
-    secoes: [["Por quê", sobre ? "Trovoada sobre a cidade (descargas atmosféricas e rajadas)."
-                               : "Trovoada próxima, que pode chegar (descargas atmosféricas e rajadas)."],
-             ["O que significa", "Raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica."]],
-    fazer: "Carregue celulares e lanternas e tire aparelhos sensíveis da tomada.",
-    origem: `aviso de trovoada do TEMPO-RJ, com base nas ${ORIG_REDEMET.replace("descargas atmosféricas detectadas", "descargas detectadas")}, leitura das ${hhmm(it.quadro)}.`,
-    resumo: `${sobre ? "Trovoada sobre a cidade" : "Trovoada próxima"}: ${juntar(muns.map((m) => m.nome))}.` } as Aviso;
-}
+// Pedido do usuario (16/11): o risco de falta de energia vem DENTRO do aviso de
+// trovoada, nao num segundo card logo depois ("um apos o outro as leituras se
+// perdem"). Substitui o aviso separado de 08/11.
+const ENERGIA = "Raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica nos municípios acima.";
 
 const NIV_INMET: [string, string][] = [["Amarelo", C.warning], ["Laranja", C.laranja], ["Vermelho", C.critical]];
 const NIV_DC: [string, string][] = [["Muito baixo", C.good], ["Baixo", "#7bbf3a"], ["Moderado", C.warning], ["Alto", C.laranja], ["Muito alto", C.critical]];
@@ -617,12 +628,14 @@ export function exemplos(quando: string): { nome: string; aviso: Aviso }[] {
     { nome: "Trovoada próxima", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "a_caminho", quadro: new Date().toISOString(),
         municipios: [{ nome: "Iguaba Grande", situacao: "a_caminho", dist_km: 18, vem_de: "norte", chance: 0.48, celulas_50km: 7 },
                      { nome: "São Pedro da Aldeia", situacao: "a_caminho", dist_km: 25, vem_de: "norte", chance: 0.45, celulas_50km: 3 }] }, quando), ...base } },
+    { nome: "Trovoada próxima — atualização", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "a_caminho", quadro: new Date().toISOString(),
+        atualizacao: true, anterior: new Date(Date.now() - 40 * 60_000).toISOString(), novos: ["São Pedro da Aldeia"],
+        municipios: [{ nome: "São Pedro da Aldeia", situacao: "a_caminho", dist_km: 18, vem_de: "noroeste", chance: 0.44, celulas_50km: 3 },
+                     { nome: "Iguaba Grande", situacao: "a_caminho", dist_km: 21, vem_de: "norte", chance: 0.41, celulas_50km: 3 }] }, quando), ...base } },
     { nome: "Trovoada sobre a cidade", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "no_municipio", quadro: new Date().toISOString(),
         municipios: [{ nome: "Silva Jardim", situacao: "no_municipio", dist_km: 6, celulas_50km: 18 },
                      { nome: "São Pedro da Aldeia", situacao: "a_caminho", dist_km: 22, vem_de: "oeste", chance: 0.48, celulas_50km: 18 }] }, quando), ...base } },
     { nome: "Trovoada se afastou", aviso: { ...avisoTrovoada({ regiao: LAGOS, tipo: "afastou", quadro: new Date().toISOString(), municipios: [] }, quando), ...base } },
-    { nome: "Risco de falta de energia agora", aviso: { ...avisoRiscoTrovoada({ regiao: LAGOS, tipo: "no_municipio", quadro: new Date().toISOString(),
-        municipios: [{ nome: "Silva Jardim", situacao: "no_municipio", dist_km: 6 }, { nome: "Araruama", situacao: "a_caminho", dist_km: 20 }] }, quando), ...base } },
     ...avisosAlerta({ tipo: "inmet", regiao: LAGOS, severidade: "perigo", como: "novo", descricao: "Tempestade",
         inicio: new Date(Date.now() - 3600_000).toISOString(), fim: new Date(Date.now() + 6 * 3600_000).toISOString(),
         municipios: ["Araruama", "Cabo Frio", "São Pedro da Aldeia", "Saquarema"],

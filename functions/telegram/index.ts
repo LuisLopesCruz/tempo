@@ -166,7 +166,8 @@ async function processar(jobs: Job[]): Promise<number> {
 }
 const EMOJI: Record<string, string> = { raio: "⚡", check: "✅", tomada: "🔌", alerta: "⚠️", montanha: "🏔️", onda: "🌊", chuva: "🌧️" };
 function legendaAviso(a: K.Aviso, regiao: string): string {
-  return `<b>${EMOJI[a.icone] ?? ""} ${esc(a.titulo)} · ${esc(regiao)}</b>` + (a.resumo ? "\n" + esc(a.resumo) : "");
+  return (a.tag ? `🔄 <b>${esc(a.tag)}</b>\n` : "") +
+    `<b>${EMOJI[a.icone] ?? ""} ${esc(a.titulo)} · ${esc(regiao)}</b>` + (a.resumo ? "\n" + esc(a.resumo) : "");
 }
 function agoraTxt(): string {
   const t = new Date(Date.now() - 3 * 3_600_000);
@@ -370,7 +371,11 @@ async function botao(q: any) {
 type Mun = { nome: string; situacao: string; dist_km: number | null;
   vem_de?: string | null; chance?: number | null };
 type Item = { regiao: string; tipo: string; silencioso: boolean; municipios: Mun[]; quadro: string;
-  desempenho?: { verificados: number; acertos: number } };
+  desempenho?: { verificados: number; acertos: number };
+  atualizacao?: boolean; anterior?: string | null; novos?: string[] };
+// linha de topo do texto de reserva quando a regiao ja tinha aviso aberto
+const topoAtualizacao = (it: Item) =>
+  it.atualizacao ? `🔄 <b>ATUALIZAÇÃO</b>${it.anterior ? ` do aviso das ${hm(it.anterior)}` : ""}\n` : "";
 
 const LADO: Record<string, string> = { norte: "ao norte", sul: "ao sul", leste: "a leste", oeste: "a oeste",
   nordeste: "a nordeste", noroeste: "a noroeste", sudeste: "a sudeste", sudoeste: "a sudoeste" };
@@ -418,25 +423,19 @@ function rodapeTrovoada(itens: Item[]): string {
          "cada aviso é conferido 2 h depois.</i>";
 }
 
-// Pedido do usuario (08/11): trovoada a caminho ou sobre a cidade dispara
-// TAMBEM o aviso de risco eletrico — duas mensagens, uma de cada.
-function blocoRiscoTrovoada(it: Item): string {
-  const muns = (it.municipios ?? []).filter((m) => m.situacao === "a_caminho" || m.situacao === "no_municipio");
-  const sobre = it.tipo === "no_municipio";
-  return [`🔌 <b>RISCO DE FALTA DE ENERGIA AGORA · ${esc(it.regiao)}</b>`,
-    `<b>Onde:</b> ${muns.map((m) => esc(m.nome)).join(", ")}`,
-    `<b>Por quê:</b> ${sobre ? "trovoada sobre a cidade" : "trovoada próxima, que pode chegar"} (descargas atmosféricas e rajadas)`,
-    "<b>O que significa:</b> raios e rajadas de tempestade costumam provocar desligamentos na rede elétrica.",
-    `<b>Origem:</b> aviso de trovoada do TEMPO-RJ, com base nas descargas detectadas pela Força Aérea (REDEMET) — leitura das ${hm(it.quadro)}.`,
-    "<b>O que fazer:</b> carregue celulares e lanternas e tire aparelhos sensíveis da tomada."].join("\n");
-}
+// Pedido do usuario (16/11): o risco de falta de energia vem DENTRO do aviso de
+// trovoada (antes, de 08/11, era uma segunda mensagem logo depois, e as duas
+// leituras se perdiam). No texto de reserva, vira um paragrafo a mais.
+const linhaEnergia = (it: Item) => it.tipo === "a_caminho" || it.tipo === "no_municipio"
+  ? "\n🔌 <b>Risco de falta de energia agora:</b> raios e rajadas costumam provocar desligamentos na rede elétrica. " +
+    "Carregue celulares e lanternas e tire aparelhos sensíveis da tomada."
+  : "";
 
 type Dest = { chat_id: number; regioes: string[]; todas: boolean };
 const segue = (d: Dest, regiao: string) => d.todas || d.regioes.includes(regiao);
 const ordemRegiao = (a: { regiao: string }, b: { regiao: string }) => REGIOES.indexOf(a.regiao) - REGIOES.indexOf(b.regiao);
 
-// Um card por regiao; trovoada chegando ou sobre a cidade gera TAMBEM o card
-// de risco eletrico (pedido do usuario, 08/11: dois avisos).
+// Um card por regiao, com o risco de falta de energia dentro (16/11).
 async function jobsTrovoada(dest: Dest[], quando: string): Promise<Job[]> {
   const plano = ((await rpc("tempo_tg_plano_trovoada")) as Item[]).sort(ordemRegiao);
   const jobs: Job[] = [];
@@ -445,13 +444,8 @@ async function jobsTrovoada(dest: Dest[], quando: string): Promise<Job[]> {
     if (!quem.length) continue;
     const a = K.avisoTrovoada(it as K.ItemTrovoada, quando);
     jobs.push({ tipo: "trovoada", regiao: it.regiao, card: { k: "aviso", a }, legenda: legendaAviso(a, it.regiao),
-                texto: blocoRegiao(it) + rodapeTrovoada([it]),
+                texto: topoAtualizacao(it) + blocoRegiao(it) + linhaEnergia(it) + rodapeTrovoada([it]),
                 destinos: quem.map((d) => ({ chat: d.chat_id, silencioso: it.silencioso })) });
-    if (it.tipo === "a_caminho" || it.tipo === "no_municipio") {
-      const r = K.avisoRiscoTrovoada(it as K.ItemTrovoada, quando);
-      jobs.push({ tipo: "risco_trovoada", regiao: it.regiao, card: { k: "aviso", a: r }, legenda: legendaAviso(r, it.regiao),
-                  texto: blocoRiscoTrovoada(it), destinos: quem.map((d) => ({ chat: d.chat_id, silencioso: false })) });
-    }
   }
   return jobs;
 }
