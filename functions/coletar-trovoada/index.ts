@@ -94,6 +94,12 @@ Deno.serve(async (req: Request) => {
     }).sort((x, y) => x.t - y.t);
     nQuadros = quadros.length;
     const ultimo = quadros[quadros.length - 1].t;
+    // 16/11: a REDEMET ficou 1h43 sem publicar e o coletor respondia "ok".
+    // Quadro velho e PROBLEMA (aparece no tempo_saude); a ingestao segue igual.
+    const idadeMin = Math.round((Date.now() - ultimo) / 60_000);
+    if (idadeMin > 30) {
+      problemas.push(`REDEMET sem quadro novo desde ${new Date(ultimo).toISOString().slice(11, 16)} UTC (${idadeMin} min)`);
+    }
 
     // quadro "de ~30 min atras" para cada quadro: o mais perto de 30 min, entre 24 e 36
     const anterior = quadros.map((q) => {

@@ -368,6 +368,7 @@ export function cardBoletimMunicipio(m: MunB & { regiao: string; trovoada: any; 
   const LADO: Record<string, string> = { norte: "ao norte", sul: "ao sul", leste: "a leste", oeste: "a oeste",
     nordeste: "a nordeste", noroeste: "a noroeste", sudeste: "a sudeste", sudoeste: "a sudoeste" };
   const tv: Peca = !t ? linhaPonto(C.muted, "sem leitura da REDEMET")
+    : t.situacao === "sem_dado" ? linhaPonto(C.muted, `Sem leitura da REDEMET desde ${hhmm(t.quadro)}: trovoada pode estar ocorrendo sem ser vista`)
     : t.situacao === "no_municipio" ? linhaPonto(C.critical, "Sobre o município: descargas a até 10 km nos últimos 20 min")
     : t.situacao === "a_caminho" ? linhaPonto(C.laranja, `Próxima: a ~${Math.round(t.dist_km ?? 0)} km${t.vem_de ? " " + (LADO[t.vem_de] ?? "") : ""}` +
                                               (t.chance != null ? ` · ${Math.round(100 * t.chance)}% de chance de chegar` : ""))
