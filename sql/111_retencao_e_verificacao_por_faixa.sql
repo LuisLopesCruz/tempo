@@ -9,8 +9,8 @@
 --    6-24h virava ~7-12h, 24-72h virava ~24-30h e 72-120h virava ~72-78h. Na
 --    semana ate 22/11 nao houve um par sequer com 48-71h nem com 96-120h: o
 --    peso "de 3 a 5 dias" de cada modelo media, na pratica, o dia 3. Agora a
---    faixa guarda a emissao mais perto do CENTRO (15h, 48h, 96h); 0-6h segue
---    com a mais recente. Para alcancar 96h com observacao que chega com
+--    faixa guarda a emissao mais perto do CENTRO (48h, 96h); 0-6h e 6-24h seguem
+--    com a mais recente (como nos demais pontos). Para alcancar 96h com observacao que chega com
 --    atraso, a leitura das previsoes passa de 4 para 6 dias.
 --    Transicao: horas ja verificadas na faixa nao sao refeitas; por 45 dias os
 --    grupos 24-72h e 72-120h misturam os dois criterios.
@@ -80,7 +80,12 @@ begin
            ponto_id, linhagem_id, valido_em, previsto, observado, fonte, horizonte_h, faixa
       from marcado
      where verifica_longo
-     order by ponto_id, linhagem_id, valido_em, faixa, abs(horizonte_h - centro), emitida_em desc
+     order by ponto_id, linhagem_id, valido_em, faixa,
+              -- so nas faixas que SO os sentinelas medem; em 0-6h e 6-24h segue a
+              -- mais recente, igual a regra (a) — senao a mesma hora ganha dois
+              -- pares na faixa 6-24h (visto na rodada de 22/11 15:25)
+              case when faixa in ('24-72h', '72-120h') then abs(horizonte_h - centro) else 0 end,
+              emitida_em desc
   ),
   pareado as (
     select * from curto
