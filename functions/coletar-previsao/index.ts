@@ -61,7 +61,15 @@ const VARS: Record<string, string> = {
   // (JMA nao publica).
   cape:                "cape",
 };
-const OM_VARS = Object.keys(VARS);
+// Nuvem VISIVEL (22/11/2026): o maior entre nuvem baixa e media. A cobertura
+// total (cloud_cover) soma as nuvens altas — cirros finos que nao escondem o
+// sol — e quatro dos oito modelos as espalham pelo ceu inteiro: em 22/11,
+// com ceu azul e METAR "FEW" em Sao Pedro da Aldeia, a mediana total dava
+// 81-96% e o painel nunca desenhava sol. Baixa e media sao buscadas mas NAO
+// gravadas: so o maximo das duas vai para o blob (o banco esta perto dos
+// 500 MB do plano gratuito; uma serie a mais custa ~1/7 do tamanho do blob).
+const NUVEM_CAMADAS = ["cloud_cover_low", "cloud_cover_mid"];
+const OM_VARS = [...Object.keys(VARS), ...NUVEM_CAMADAS];
 
 type Ponto    = { id: number; lat: number; lon: number };
 type Linhagem = { id: number; om: string; slug: string };
@@ -145,6 +153,15 @@ Deno.serve(async (req: Request) => {
             if (!serie.some((v: number | null) => v !== null)) continue;
             temAlgo = true;
             dados[chave] = serie;
+          }
+          const baixa = loc.hourly[`cloud_cover_low_${lin.om}`];
+          const media = loc.hourly[`cloud_cover_mid_${lin.om}`];
+          if (Array.isArray(baixa) || Array.isArray(media)) {
+            const vis = tempos.map((_, i) => {
+              const b = Array.isArray(baixa) ? baixa[i] : null, m = Array.isArray(media) ? media[i] : null;
+              return b == null && m == null ? null : Math.max(b ?? 0, m ?? 0);
+            });
+            if (vis.some((v) => v !== null)) dados.nuvem_vis = vis;
           }
           if (!temAlgo) continue;
           linhas.push({

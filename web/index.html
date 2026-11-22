@@ -467,8 +467,10 @@ footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--grid);
 
   <div class="card" id="cardTempo">
     <h2>Como o tempo deve ficar, hora a hora</h2>
-    <p class="hint">O desenho vem da <b>mediana das 8 fam&iacute;lias</b> &mdash; cobertura de nuvem
-      e chuva na mesma hora. Chuva manda no &iacute;cone; sem chuva, quem decide &eacute; a nuvem.
+    <p class="hint">O desenho vem da <b>mediana das 8 fam&iacute;lias</b>. Tempestade vem da energia
+      para tempestade com chuva prov&aacute;vel; sem ela, chuva manda no &iacute;cone; sem chuva, quem
+      decide &eacute; a nuvem <b>vis&iacute;vel</b> (baixa e m&eacute;dia &mdash; cirro alto e fino n&atilde;o
+      esconde o sol). Os cortes s&atilde;o aprendidos com o c&eacute;u observado nos aeroportos do RJ.
       Passe o mouse para os n&uacute;meros.</p>
     <div class="hm" id="tempoHm"></div>
     <div class="tleg" id="tempoLeg" hidden>
@@ -894,24 +896,30 @@ function renderHero(linhas){
    A ordem das regras importa: chuva prevalece sobre nuvem, porque chove
    justamente com o ceu carregado e mostrar "encoberto" numa hora de chuva
    esconderia o que interessa. */
+// 22/11: o ceu e a tempestade vem PRONTOS do banco (tempo_previsao.ceu e
+// .trovoada, sql/110), com cortes aprendidos contra o METAR dos aeroportos.
+// Antes os cortes eram fixos aqui e usavam a nuvem TOTAL, inflada pelas
+// nuvens altas: com ceu azul em Sao Pedro da Aldeia, dava 81-96% e o sol e a
+// noite limpa nunca apareciam; a tempestade pedia chance de chuva forte >= 50%,
+// que nenhuma hora do estado alcancava.
 function condicao(d, hora){
   const p = +d.precip_mediana;
   const noite = hora < 6 || hora >= 18;   // Rio fica no tropico: nasce ~6h,
                                           // poe ~18h o ano todo, com folga de
                                           // meia hora. Nao vale puxar efemeride.
-  if (+d.prob_chuva_forte >= 0.5 || p >= 15) return ["i-tempestade", "tempestade"];
+  if (d.trovoada) return ["i-tempestade", "tempestade"];
   if (p >= 5)   return ["i-forte",  "chuva forte"];
   if (p >= 0.5) return ["i-chuva",  "chuva"];
   if (p >= 0.1) return ["i-garoa",  "garoa"];
-  const n = d.nuvem_pct;
-  // Sem cobertura de nuvem nao da para distinguir sol de encoberto. Desenhar
-  // um sol nesse caso seria inventar: a celula fica vazia e o tooltip explica.
-  if (n === null || n === undefined) return [null, "cobertura de nuvem ainda não coletada"];
-  if (n >= 85) return ["i-encoberto", "encoberto"];
-  if (n >= 50) return ["i-nublado",   "nublado"];
-  if (n >= 20) return noite ? ["i-parcial-noite", "poucas nuvens"]
-                            : ["i-parcial", "sol entre nuvens"];
-  return noite ? ["i-lua", "noite limpa"] : ["i-sol", "sol"];
+  // Sem nuvem nao da para distinguir sol de encoberto. Desenhar um sol nesse
+  // caso seria inventar: a celula fica vazia e o tooltip explica.
+  switch (d.ceu){
+    case "encoberto": return ["i-encoberto", "encoberto"];
+    case "nublado":   return ["i-nublado",   "nublado"];
+    case "parcial":   return noite ? ["i-parcial-noite", "poucas nuvens"] : ["i-parcial", "sol entre nuvens"];
+    case "sol":       return noite ? ["i-lua", "noite limpa"] : ["i-sol", "sol"];
+    default:          return [null, "cobertura de nuvem ainda não coletada"];
+  }
 }
 
 function renderTempo(linhas){
@@ -967,7 +975,10 @@ function renderTempo(linhas){
     mostrarTip(e,
       dd(t.getHours()) + ":00 &middot; " + diaSem[t.getDay()] + " " + t.getDate(),
       "<b>" + nome + "</b><br>" +
-      (d.nuvem_pct == null ? "" : "c&eacute;u " + Math.round(d.nuvem_pct) + "% coberto<br>") +
+      (d.nuvem_vis != null ? "nuvem vis&iacute;vel " + Math.round(d.nuvem_vis) + "%" +
+         (d.nuvem_pct != null && d.nuvem_pct - d.nuvem_vis >= 30 ? " &middot; nuvem alta e fina " + Math.round(d.nuvem_pct) + "%" : "") + "<br>"
+       : d.nuvem_pct == null ? "" : "c&eacute;u " + Math.round(d.nuvem_pct) + "% coberto<br>") +
+      (d.p_trovoada != null && d.p_trovoada >= 0.1 ? "chance de trovoada " + Math.round(100 * d.p_trovoada) + "%<br>" : "") +
       "chuva " + nf(d.precip_mediana) + " mm na hora" +
       (d.temp_mediana == null ? "" : " &middot; " + nf(d.temp_mediana) + " &deg;C"));
   };
@@ -1582,7 +1593,7 @@ async function carregar(pontoId){
     const linhas = await api("/tempo_previsao?ponto_id=eq." + pontoId +
       "&select=valido_em,horizonte_h,n_familias,precip_mediana,precip_p25,precip_p75," +
       "precip_max,dispersao_precip,rajada_max,prob_chuva,prob_chuva_forte," +
-      "temp_mediana,nuvem_pct&order=valido_em.asc");
+      "temp_mediana,nuvem_pct,nuvem_vis,ceu,p_trovoada,trovoada&order=valido_em.asc");
     if (!linhas.length){
       $("#meta").innerHTML = '<span class="erro">Sem previsao para este municipio.</span>';
       return;
