@@ -225,7 +225,7 @@ const AJUDA =
   "<b>TEMPO-RJ</b> · avisos de tempo para o estado do Rio\n\n" +
   "/boletim — boletim agora: de um município ou das suas regiões\n" +
   "/boletim Petrópolis — direto para um município\n" +
-  "/evento — informar o que está acontecendo agora (trovoada, chuva forte, vento, granizo, alagamento, falta de luz): ajuda a calibrar os avisos\n" +
+  "/evento — informar o que está acontecendo agora (ouvi trovão, vi clarões, chuva forte, vento, granizo, alagamento, falta de luz): ajuda a calibrar os avisos\n" +
   "/regioes — escolher as regiões que você acompanha\n" +
   "/parar — parar de receber avisos\n" +
   "/start — voltar a receber\n" +
@@ -891,9 +891,13 @@ async function botaoBoletim(q: any, chat: number, d: string, u: any) {
 //   e:m:<ev>:<ri>:<mm>:<i> liga/desliga o municipio i da regiao
 //   e:all:<ev>:<ri>        registra a regiao toda
 //   e:f:<ev>:<ri>:<mm>     registra os municipios marcados
+// 22/11: "trovoada" virou dois — ouvir e ver dizem distancias diferentes (claroes
+// sem som a 41 km em Sao Pedro da Aldeia; trovao ouvido com a celula a 26 km).
+// O indice 0 continua sendo o do /ouvi (mascara 1).
 const EVENTOS: [string, string, string][] = [
-  ["trovoada", "⚡", "Trovoada"], ["chuva", "🌧️", "Chuva forte"], ["vento", "💨", "Vento forte"],
-  ["granizo", "🧊", "Granizo"], ["alagamento", "🌊", "Alagamento"], ["falta_luz", "🔌", "Falta de luz"]];
+  ["trovao", "🔊", "Ouvi trovão"], ["clarao", "⚡", "Vi clarões"], ["chuva", "🌧️", "Chuva forte"],
+  ["vento", "💨", "Vento forte"], ["granizo", "🧊", "Granizo"], ["alagamento", "🌊", "Alagamento"],
+  ["falta_luz", "🔌", "Falta de luz"]];
 const TXT_EVENTOS = "📣 <b>Informar evento</b>\nO que está acontecendo agora? Marque um ou mais e toque em <b>Continuar</b>.\n" +
   "<i>Seu relato ajuda o TEMPO-RJ a calibrar os avisos.</i>";
 const bits = (mask: number, n: number) => Array.from({ length: n }, (_, i) => i).filter((i) => mask & (1 << i));
@@ -902,8 +906,9 @@ const nomesEventos = (ev: number) => bits(ev, EVENTOS.length).map((i) => `${EVEN
 function tecladoEventos(ev: number) {
   const linhas: { text: string; callback_data: string }[][] = [];
   for (let i = 0; i < EVENTOS.length; i += 2) {
-    linhas.push([i, i + 1].map((k) => ({ text: `${ev & (1 << k) ? "✅" : "▫️"} ${EVENTOS[k][1]} ${EVENTOS[k][2]}`,
-                                          callback_data: `e:t:${ev}:${k}` })));
+    linhas.push([i, i + 1].filter((k) => k < EVENTOS.length)   // 7 eventos: a ultima linha tem um so
+      .map((k) => ({ text: `${ev & (1 << k) ? "✅" : "▫️"} ${EVENTOS[k][1]} ${EVENTOS[k][2]}`,
+                     callback_data: `e:t:${ev}:${k}` })));
   }
   linhas.push([{ text: "Continuar ▶", callback_data: `e:ok:${ev}` }]);
   return { inline_keyboard: linhas };
@@ -1031,7 +1036,7 @@ async function configurar() {
                            drop_pending_updates: false });   // o /start que ja esta na fila vale
   await tg("setMyCommands", { commands: [
     { command: "boletim", description: "Boletim agora: um município ou suas regiões" },
-    { command: "evento", description: "Informar evento: trovoada, chuva, vento, falta de luz…" },
+    { command: "evento", description: "Informar evento: trovão, clarões, chuva, vento, falta de luz…" },
     { command: "regioes", description: "Escolher as regiões que você acompanha" },
     { command: "parar", description: "Parar de receber avisos" },
     { command: "start", description: "Voltar a receber avisos" },
