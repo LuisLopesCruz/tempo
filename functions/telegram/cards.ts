@@ -348,7 +348,7 @@ export function cardBoletimRegiao(r: { regiao: string; muns: MunB[]; inmet: any[
 
   return montar(cabecalho({ cor: C.accent, icone: "nuvem", kicker: `Boletim das ${rotulo} · ${quando.split(" ")[0]}`,
                             titulo: r.regiao, sub: `${ms.length} municípios · o pior número de cada item` }),
-                corpo, rodape("previsão das 8 famílias de modelos do TEMPO-RJ, pluviômetros do CEMADEN e Alerta Rio, modelo de impacto (ANEEL), INMET e Defesa Civil.", quando, false));
+                corpo, rodape("previsão das 8 famílias de modelos do TEMPO-RJ, pluviômetros do CEMADEN, modelo de impacto (ANEEL), INMET e Defesa Civil.", quando, false));
 }
 
 export type Dia = { dia: string; mm: number; mm_min: number; mm_max: number; familias: number; n: number };
@@ -394,7 +394,7 @@ export function cardBoletimMunicipio(m: MunB & { regiao: string; trovoada: any; 
   corpo.push(bloco("Alertas em vigor", al, 14));
   return montar(cabecalho({ cor: C.accent, icone: "pino", kicker: `${m.regiao} · agora ${quando.split(" ")[1] ?? ""}`,
                             titulo: m.municipio }),
-                corpo, rodape("previsão das 8 famílias de modelos do TEMPO-RJ, pluviômetros do CEMADEN e Alerta Rio, descargas da REDEMET, modelo de impacto (ANEEL), INMET e Defesa Civil.", quando, false));
+                corpo, rodape("previsão das 8 famílias de modelos do TEMPO-RJ, pluviômetros do CEMADEN, descargas da REDEMET, modelo de impacto (ANEEL), INMET e Defesa Civil.", quando, false));
 }
 
 // ------------------------------------------------------------------ enriquecimento dos boletins
@@ -612,7 +612,7 @@ export function avisosAlerta(a: any, quando: string): Aviso[] {
       }),
       secoes: [["O que significa", "Chuva intensa, com risco de alagamento em pontos baixos nas próximas horas."]],
       fazer: "Evite ruas que costumam alagar e não atravesse água corrente.",
-      origem: "pluviômetros do CEMADEN e do Alerta Rio no município" + (it[0]?.hora ? `, leitura das ${hhmm(it[0].hora)}` : "") +
+      origem: "pluviômetros do CEMADEN no município" + (it[0]?.hora ? `, leitura das ${hhmm(it[0].hora)}` : "") +
               ". Limite do aviso: 30 mm em 1 hora ou 50 mm em 24 horas.",
       resumo: it.map((i) => `${i.municipio} ${nf((i.mm1h ?? 0) >= 30 ? i.mm1h : i.mm24, 0)} mm`).join(" · ") } as Aviso];
   }

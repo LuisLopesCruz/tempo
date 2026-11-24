@@ -11,9 +11,9 @@
 // outro cron, outro segredo e outro deploy — mais processo do que o problema
 // merece.
 //
-// DESCOBERTA OPERACIONAL (2026-09-10): ambas as fontes recusam a requisição
-// sem User-Agent de navegador — a do Alerta Rio devolve "Request Rejected"
-// (WAF) e a do INMET derruba a conexão. O cabeçalho abaixo não é cosmético.
+// DESCOBERTA OPERACIONAL (2026-09-10): as fontes recusam a requisição sem
+// User-Agent de navegador — o INMET derruba a conexão (o Alerta Rio, desligado
+// em 2026-11-24, devolvia "Request Rejected"). O cabeçalho não é cosmético.
 //
 // verify_jwt FICA EM false DE PROPOSITO: quem chama e o pg_cron via pg_net,
 // que manda o cabecalho x-tempo-secret e nao um JWT. A autenticacao propria
@@ -32,7 +32,6 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const CAB = { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" };
 
-const ALERTA_RIO = "http://websempre.rio.rj.gov.br/json/chuvas";
 const INMET_AVISOS = "https://apiprevmet3.inmet.gov.br/avisos/ativos";
 
 // Painel do CEMADEN-RJ, da Defesa Civil estadual. NÃO é API: é HTML renderado
@@ -112,17 +111,6 @@ function evento(desc: string): string {
   return d.replace(/[^a-z]+/g, "_").slice(0, 40) || "outro";
 }
 
-// Alinhamento temporal: a precipitação horária do Open-Meteo é a soma da hora
-// ANTERIOR ao timestamp. O h01 do Alerta Rio é a chuva na última hora até a
-// leitura. Arredondar a leitura para a hora mais próxima põe os dois na mesma
-// grade — sem isso, previsto e observado comparariam janelas defasadas.
-function horaMaisProxima(iso: string): string {
-  const t = new Date(iso);
-  if (t.getUTCMinutes() >= 30) t.setUTCHours(t.getUTCHours() + 1);
-  t.setUTCMinutes(0, 0, 0);
-  return t.toISOString();
-}
-
 Deno.serve(async (req: Request) => {
   if (!SEGREDO) {
     return new Response(JSON.stringify({ erro: "TEMPO_SEGREDO nao configurado" }), {
@@ -142,47 +130,14 @@ Deno.serve(async (req: Request) => {
   );
 
   const problemas: string[] = [];
-  let nObs = 0, nAlertas = 0, nRisco = 0;
+  let nAlertas = 0, nRisco = 0;
 
-  // ------------------------------------------------- observação: Alerta Rio
-  try {
-    const r = await fetch(ALERTA_RIO, { headers: CAB });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const body = await r.json();
-    const objetos: any[] = body?.objects ?? [];
-    const linhas: unknown[] = [];
-
-    for (const o of objetos) {
-      if (o?.kind !== "pluviometric") continue;
-      const loc = o.location;
-      if (!Array.isArray(loc) || loc.length < 2) continue;
-      const medido = horaMaisProxima(o.read_at);
-      // h01 é a variável de verificação; h24 fica como contexto de saturação
-      // do solo, que é o que importa para deslizamento.
-      const vars: Array<[string, unknown]> = [
-        ["precip_1h", o.data?.h01],
-        ["precip_24h", o.data?.h24],
-      ];
-      for (const [nome, valor] of vars) {
-        if (valor === null || valor === undefined) continue;
-        linhas.push({
-          fonte: "alertario",
-          estacao: String(o.name).slice(0, 60),
-          lat: loc[0], lon: loc[1],
-          medido_em: medido,
-          variavel: nome,
-          valor: Number(valor),
-        });
-      }
-    }
-    if (linhas.length) {
-      const { data, error } = await sb.rpc("tempo_ingerir_observacao", { p_rows: linhas });
-      if (error) problemas.push("alertario ingestao: " + error.message);
-      else nObs = (data as number) ?? 0;
-    }
-  } catch (e) {
-    problemas.push("alertario: " + (e instanceof Error ? e.message : String(e)));
-  }
+  // Alerta Rio DESLIGADO em 2026-11-24 (pedido do usuario): desde 22/10 a fonte
+  // devolve pagina HTML do firewall em vez do JSON — 730 rodadas seguidas com
+  // falha, que deixavam esta coleta inteira marcada como falha no coleta_log e
+  // escondiam um erro de verdade do INMET ou da Defesa Civil. A chuva da capital
+  // segue pelo CEMADEN. Os pares antigos (ate 22/10) ficam: sao medicao real.
+  // Para religar, recuperar o bloco do git (commit anterior a este).
 
   // --------------------------------------------------- alertas: INMET avisos
   try {
@@ -264,13 +219,13 @@ Deno.serve(async (req: Request) => {
       p_fonte: "observacao+alerta",
       p_ms: ms,
       p_ok: problemas.length === 0,
-      p_n: nObs + nAlertas + nRisco,
+      p_n: nAlertas + nRisco,
       p_erro: problemas.length ? problemas.join(" | ").slice(0, 2000) : null,
     });
   } catch (_) { /* nunca derrubar a coleta por causa do log */ }
 
   return new Response(
-    JSON.stringify({ ok: problemas.length === 0, observacoes: nObs, alertas: nAlertas,
+    JSON.stringify({ ok: problemas.length === 0, alertas: nAlertas,
                      risco: nRisco, ms, problemas }),
     { headers: { "Content-Type": "application/json" } },
   );

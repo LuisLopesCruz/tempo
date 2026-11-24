@@ -523,7 +523,7 @@ function blocoAlerta(a: Alerta): string {
       ...a.itens.map((i: any) => `<b>Onde:</b> ${esc(i.municipio)} — ` +
         (i.mm1h >= 30 ? `${n0(i.mm1h)} mm na última hora` : `${n0(i.mm24)} mm em 24 h`) + " (pluviômetro)"),
       "<b>O que significa:</b> chuva intensa, com risco de alagamento em pontos baixos nas próximas horas.",
-      "<b>Origem:</b> chuva medida pelos pluviômetros do CEMADEN e do Alerta Rio no município" +
+      "<b>Origem:</b> chuva medida pelos pluviômetros do CEMADEN no município" +
         (a.itens[0]?.hora ? ` — leitura das ${hm(a.itens[0].hora)}` : "") + ". Limite do aviso: 30 mm em 1 hora ou 50 mm em 24 horas.",
       "<b>O que fazer:</b> evite ruas que costumam alagar e não atravesse água corrente."].join("\n");
   }
